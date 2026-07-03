@@ -10,10 +10,12 @@ so it lives here once and every transform calls it.
 It also hosts the family's SOUNDNESS RAILS (:func:`family_rail_blocker`): the
 adversarially-verified refusal checks the exact-dup landers (dedup_extract,
 dedup_total_return, dedup_guarded_return) run after resolving every occurrence
-— occurrence identity, cross-module free-global rebinds, and the per-run lift
-hazards (multi-line strings, pre-run closures, invisible non-``Name`` bindings,
-``async for``/``async with``, frame/namespace reflection). Strictly
-refuse-direction: a rail can only turn an unsound accept into a blocker.
+— occurrence identity, overlapping same-file spans, cross-module free-global
+rebinds, and the per-run lift hazards (multi-line string/bytes constants,
+pre-run closures, invisible non-``Name`` bindings, ``async for``/``async
+with``, frame/namespace reflection, ``global``/``nonlocal``-declared names the
+run binds or reads). Strictly refuse-direction: a rail can only turn an
+unsound accept into a blocker.
 
 This is a **library** (leading underscore in the filename) — it is never an
 objective and exposes no ``plan_*`` entry point. It imports nothing from the
@@ -174,14 +176,16 @@ def _async_hazard_reason(run: list) -> str | None:
 
 
 def _multiline_string_reason(run: list) -> str | None:
-    """A string constant (or f-string) spanning multiple physical lines:
+    """A string/bytes constant (or f-string) spanning multiple physical lines:
     ``_reindent`` treats its continuation lines as CODE and rewrites the
-    string's contents. Refuse-first — no delta-indent preservation."""
+    constant's contents (a ``b\"\"\"…\"\"\"`` literal corrupts exactly like a
+    ``str`` one). Refuse-first — no delta-indent preservation. The blocker
+    string is unchanged (pinned by existing tests)."""
     for stmt in run:
         for n in ast.walk(stmt):
             is_str = (isinstance(n, ast.JoinedStr)
                       or (isinstance(n, ast.Constant)
-                          and isinstance(n.value, str)))
+                          and isinstance(n.value, (str, bytes))))
             if (is_str and getattr(n, "end_lineno", None) is not None
                     and n.end_lineno > n.lineno):
                 return ("the range contains a multi-line string constant — "
@@ -244,16 +248,39 @@ def _invisible_binding_reason(fn, run: list) -> str | None:
     return None
 
 
+def _global_decl_reason(fn, run: list) -> str | None:
+    """A ``global``/``nonlocal`` declaration anywhere in the enclosing function
+    whose name the run BINDS or READS: the declaration does not travel with the
+    lift, so inside the helper a store becomes a helper-LOCAL bind (and a read
+    resolves through a different scope chain) — an in-run call that reads the
+    module global then observes a stale value. The in-run ``global`` case is
+    already blocked upstream; this catches declarations OUTSIDE the run."""
+    declared: set[str] = set()
+    for n in ast.walk(fn):
+        if isinstance(n, (ast.Global, ast.Nonlocal)):
+            declared.update(n.names)
+    if not declared:
+        return None
+    hit = sorted(declared & (_bound_names(run) | _loads(run)))
+    if hit:
+        return (f"the enclosing function declares `{hit[0]}` "
+                "global/nonlocal and the range binds or reads it — the "
+                "lifted helper would rebind it as a helper-local instead")
+    return None
+
+
 def occurrence_rail_reason(fn, run: list) -> str | None:
     """The first per-run soundness-rail reason ``run`` cannot lift verbatim out
     of ``fn`` (or ``None``): async blocks, multi-line strings, reflection,
-    pre-run closures over run-stores, and invisible non-``Name`` bindings.
+    pre-run closures over run-stores, invisible non-``Name`` bindings, and
+    ``global``/``nonlocal``-declared names the run binds or reads.
     Fixed order, deterministic."""
     return (_async_hazard_reason(run)
             or _multiline_string_reason(run)
             or _reflection_reason(run)
             or _outside_closure_reason(fn, run)
-            or _invisible_binding_reason(fn, run))
+            or _invisible_binding_reason(fn, run)
+            or _global_decl_reason(fn, run))
 
 
 def _identity_blocker(resolved: list) -> str | None:
@@ -268,6 +295,25 @@ def _identity_blocker(resolved: list) -> str | None:
                     f"identical to {first.rel}:{first.span_lo} — stale "
                     "detector lines would rewrite different code with the "
                     "first copy's logic")
+    return None
+
+
+def _overlap_blocker(resolved: list) -> str | None:
+    """Two occurrences in the SAME module whose statement spans OVERLAP: the
+    bottom-up call-site splice rewrites the lower copy first, so the upper
+    copy's slice then consumes the fresh call line and neighbouring code —
+    silent corruption that still parses. Overlap is detected on the resolved
+    spans (``span_lo``/``span_hi``), the only layer that has them."""
+    by_rel: dict[str, list] = {}
+    for occ in resolved:
+        by_rel.setdefault(occ.rel, []).append(occ)
+    for rel in sorted(by_rel):
+        ordered = sorted(by_rel[rel], key=lambda o: o.span_lo)
+        for a, b in zip(ordered, ordered[1:]):
+            if b.span_lo <= a.span_hi:
+                return (f"{rel}: occurrences at lines {a.span_lo} and "
+                        f"{b.span_lo} overlap — overlapping copies cannot be "
+                        "rewritten independently, refusing")
     return None
 
 
@@ -290,13 +336,15 @@ def _cross_module_rebind_blocker(resolved: list) -> str | None:
 
 def family_rail_blocker(resolved: list) -> str | None:
     """The dedup family's post-resolution soundness rails, in fixed order:
-    occurrence identity, cross-module free-global rebinds, then each
-    occurrence's per-run rails (:func:`occurrence_rail_reason`). Returns the
-    first blocker string, or ``None`` when the block is sound to lift.
-    ``resolved`` entries only need ``rel``/``span_lo``/``stmts``/``live_in``/
-    ``fn`` (the family's ``_Occurrence`` shape). Refuse-direction only: this
-    can never widen what lands."""
+    occurrence identity, overlapping same-file spans, cross-module free-global
+    rebinds, then each occurrence's per-run rails
+    (:func:`occurrence_rail_reason`). Returns the first blocker string, or
+    ``None`` when the block is sound to lift. ``resolved`` entries only need
+    ``rel``/``span_lo``/``span_hi``/``stmts``/``live_in``/``fn`` (the family's
+    ``_Occurrence`` shape). Refuse-direction only: this can never widen what
+    lands."""
     blocker = (_identity_blocker(resolved)
+               or _overlap_blocker(resolved)
                or _cross_module_rebind_blocker(resolved))
     if blocker is not None:
         return blocker

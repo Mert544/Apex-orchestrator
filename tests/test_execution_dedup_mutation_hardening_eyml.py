@@ -741,8 +741,12 @@ def test_tail_return_shape_disagreement_blocks(tmp_path):
 # ──────────────────────────────────────────────────────────────────────────
 # Integration: occurrences whose value-leaf PATHS differ structurally -> BLOCK.
 # alpha is `x = 1; y = g(2)`, beta is `x = g(1); y = 2`: same number of value
-# leaves, but at different structural positions. ``_paths_match`` must reject
-# them; a `per_occ_leaves[0]`/`[1:]` index fault would miss the mismatch.
+# leaves, but at different structural positions.
+# fix0: since the W99-fix0 stale-group rail, the FULL structural-template
+# re-derivation fires FIRST for this hand-built divergent group (its blocker
+# says "structural drift"); the ``_paths_match`` gate stays as defence in
+# depth behind it. Same refusal, earlier and stronger gate — the pin now
+# accepts either structural blocker.
 # ──────────────────────────────────────────────────────────────────────────
 
 _LEAF_PATHS_DIFFER = '''\
@@ -766,7 +770,9 @@ def test_value_leaf_path_mismatch_blocks(tmp_path):
     plan = plan_near_dup_extract(tmp_path, group)
     assert not plan.ok
     assert not plan.new_contents
-    assert any("path" in b for b in plan.blockers)
+    # fix0: the template-drift rail catches this divergence first ("structural
+    # drift"); the leaf-path gate's "structural mismatch" sits behind it.
+    assert any("structural" in b for b in plan.blockers)
 
 
 # ──────────────────────────────────────────────────────────────────────────

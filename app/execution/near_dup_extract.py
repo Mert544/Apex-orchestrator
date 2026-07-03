@@ -34,10 +34,21 @@ doubt is a BLOCKER with empty ``new_contents`` (correctness over coverage):
     function/method body, a clean contiguous statement run, no relocate-unsafe
     control flow (tail-return is the one lifted shape, mirroring dedup_extract),
     and an IDENTICAL live-in/live-out signature across all occurrences.
-  * The differing-constant positions are located STRUCTURALLY (by re-deriving
-    near_dup's own template walk on each occurrence's AST, not by text
-    matching), and the holes are spliced by source span. If a position cannot be
-    unambiguously located in every occurrence → BLOCK.
+  * The differing-constant positions are located STRUCTURALLY: the FULL
+    structural template (near_dup's own fragment walk — operators, attribute
+    names, comparators and every primitive field encoded verbatim) is
+    re-derived per occurrence and must be IDENTICAL across all of them (any
+    divergence proves a stale/drifted group → BLOCK), then the value-leaf walk
+    maps each differing column to a real node and the holes are spliced by
+    source span. If a position cannot be unambiguously located in every
+    occurrence → BLOCK.
+  * Post-resolution soundness rails (shared with the exact-dup family where
+    they apply): same-file occurrences whose spans OVERLAP → BLOCK (the
+    bottom-up splice would corrupt); a ``global``/``nonlocal``-declared name
+    the run binds or reads → BLOCK (scope-capture divergence); a run whose
+    first statement is the enclosing function's docstring → BLOCK (the lift
+    nulls ``__doc__``); a differing hole inside a ``match`` PATTERN → BLOCK
+    (``case p0:`` is a capture pattern, not a value).
   * The assembled new source for every changed file must ``ast.parse`` or the
     plan blocks. Apply is still suite-verified with rollback via
     :class:`RenamePlan` / ``apply_rename``, but the plan must be correct on its
@@ -53,8 +64,16 @@ from pathlib import Path
 
 import keyword
 
-from app.engine.near_dup import _is_value_leaf
-from app.execution._dedup_helpers import stamp_multi_module_plan
+from app.engine.near_dup import (
+    _is_value_leaf,
+    _split_source_lines,
+    _statement_fragment,
+)
+from app.execution._dedup_helpers import (
+    _global_decl_reason,
+    _overlap_blocker,
+    stamp_multi_module_plan,
+)
 from app.execution.cross_file_rename import RenamePlan
 from app.execution.dedup_extract import (
     _Occurrence,
@@ -244,10 +263,48 @@ def _read_modules(root: Path, parsed, plan: RenamePlan):
     return sources, trees, rels
 
 
+def _docstring_span_blocker(resolved) -> str | None:
+    """A run whose FIRST statement is the enclosing function's docstring
+    (``fn.body[0]``, an ``Expr`` holding a ``str`` constant): the lift moves
+    that statement into the helper, so the original function's ``__doc__``
+    silently becomes ``None`` (help(), Sphinx, and doctest collection all
+    observe it). Refuse-direction only."""
+    for occ in resolved:
+        first = occ.fn.body[0]
+        if (occ.stmts and occ.stmts[0] is first
+                and isinstance(first, ast.Expr)
+                and isinstance(first.value, ast.Constant)
+                and isinstance(first.value.value, str)):
+            return (f"{occ.rel}:{occ.span_lo}: the range starts at the "
+                    "enclosing function's docstring — lifting it would null "
+                    "the function's `__doc__`, refusing")
+    return None
+
+
+def _soundness_rails_blocker(resolved) -> str | None:
+    """The near-dup lane's post-resolution soundness rails, in fixed order:
+    overlapping same-file spans (the bottom-up splice would corrupt),
+    ``global``/``nonlocal``-declared names the run binds or reads
+    (scope-capture divergence), and docstring-position runs (the lift nulls
+    ``__doc__``). The exact-dup family runs the first two via
+    ``family_rail_blocker``; near-dup occurrences intentionally differ at value
+    leaves, so the identity rail does not apply and the relevant rails are
+    invoked directly here. Refuse-direction only."""
+    blocker = _overlap_blocker(resolved)
+    if blocker is not None:
+        return blocker
+    for occ in resolved:
+        reason = _global_decl_reason(occ.fn, occ.stmts)
+        if reason is not None:
+            return f"{occ.rel}:{occ.span_lo}: {reason}"
+    return _docstring_span_blocker(resolved)
+
+
 def _resolve_all_occurrences(root: Path, parsed, n_statements: int,
                              sources, trees, plan: RenamePlan):
-    """Resolve every occurrence with dedup_extract's EXACT path, then enforce a
-    single live-in/live-out signature and a single tail-return shape across them
+    """Resolve every occurrence with dedup_extract's EXACT path, run the
+    lane's post-resolution soundness rails, then enforce a single
+    live-in/live-out signature and a single tail-return shape across them
     all. Returns ``(resolved, live_in, live_out, tail_return)`` or ``None``
     (recording a blocker) on any unsafe occurrence or divergence."""
     # Same contiguous-run snapping, same control-flow blockers, same tail-return
@@ -260,6 +317,11 @@ def _resolve_all_occurrences(root: Path, parsed, n_statements: int,
         if occ is None:
             return None
         resolved.append(occ)
+
+    blocker = _soundness_rails_blocker(resolved)
+    if blocker is not None:
+        plan.blockers.append(blocker)
+        return None
 
     # ONE interface: require an identical live-in/live-out signature everywhere,
     # exactly as dedup_extract does — structurally-divergent copies are never a
@@ -322,17 +384,45 @@ def _derive_diff_columns(resolved, per_occ_leaves, n_cols: int):
     return diff_cols, diff_segments
 
 
+def _occurrence_template(occ: _Occurrence) -> str:
+    """The FULL structural template of one occurrence's run — near_dup's own
+    fragment walk (:func:`app.engine.near_dup._statement_fragment`), which
+    encodes operators, attribute names, comparators, ``ctx`` and every other
+    primitive field verbatim while wildcarding exactly the value leaves —
+    joined with the detector's ``|`` statement separator. Two occurrences of a
+    genuine group share ONE template by construction, so any plan-time
+    divergence proves the group is stale."""
+    lines = _split_source_lines(occ.source)
+    parts: list[str] = []
+    for stmt in occ.stmts:
+        parts.append(_statement_fragment(stmt, lines)[0])
+        parts.append("|")
+    return "".join(parts)
+
+
 def _locate_diff_columns(resolved, diff_count: int, differences, plan: RenamePlan):
     """Locate the differing value leaves STRUCTURALLY in every occurrence.
 
-    Re-derive near_dup's value-leaf walk for each occurrence's run, check the
-    templates line up across occurrences, derive which columns differ, and gate
-    that those differences match the detector's report. Returns
-    ``(per_occ_leaves, diff_cols)`` or ``None`` (recording a blocker)."""
+    Re-derive near_dup's FULL structural template for each occurrence's run
+    (any divergence proves a stale/drifted group), re-derive the value-leaf
+    walk, check the leaf paths line up across occurrences, derive which columns
+    differ, and gate that those differences match the detector's report.
+    Returns ``(per_occ_leaves, diff_cols)`` or ``None`` (recording a
+    blocker)."""
     collected = _collect_per_occ_leaves(resolved, plan)
     if collected is None:
         return None
     per_occ_leaves, n_cols = collected
+
+    # A group only exists because every occurrence shared ONE detector
+    # template, so re-derived templates that disagree prove staleness — an
+    # operator/attribute/comparator drifted since the group was built, which
+    # the leaf-path walk below cannot see (it never visits those fields).
+    if len({_occurrence_template(occ) for occ in resolved}) > 1:
+        plan.blockers.append(
+            "occurrences no longer share one structural template — structural "
+            "drift (stale group?), refusing to parameterize")
+        return None
 
     # The structural paths must be identical column-by-column across occurrences;
     # if not, the blocks aren't really the same template and we refuse to guess.
@@ -361,21 +451,48 @@ def _locate_diff_columns(resolved, diff_count: int, differences, plan: RenamePla
     return per_occ_leaves, diff_cols
 
 
+def _pattern_node_ids(statements: list) -> set[int]:
+    """``id()`` of every AST node inside a ``match`` case PATTERN subtree of
+    ``statements``. A constant there is NOT an expression: ``case 100:`` is a
+    value pattern, but splicing a parameter name in its place yields
+    ``case p0:`` — a CAPTURE pattern that always matches and binds — so a
+    pattern-position hole can never become a value parameter. (Guards —
+    ``case … if cond:`` — are ordinary expressions and are not collected.)"""
+    out: set[int] = set()
+    for stmt in statements:
+        for n in ast.walk(stmt):
+            if isinstance(n, ast.Match):
+                for mc in n.cases:
+                    out.update(id(p) for p in ast.walk(mc.pattern))
+    return out
+
+
 def _gate_value_holes(resolved, per_occ_leaves, diff_cols,
                       plan: RenamePlan) -> bool:
     """EVERY differing leaf must be a parameterizable VALUE in every occurrence:
-    an ast.Constant, or an ast.Name LOADED (read). Returns ``True`` if all holes
-    pass, else ``False`` (recording a blocker).
+    an ast.Constant, or an ast.Name LOADED (read) — and must NOT sit inside a
+    ``match`` PATTERN subtree. Returns ``True`` if all holes pass, else
+    ``False`` (recording a blocker).
 
     A differing loaded Name is provably safe — because the detector only
     wildcards value leaves and a name BOUND inside the block is a Store
     (structure that must match to group), any differing loaded Name is a FREE
     name (global/builtin/outer), so passing its value as an argument is identical
     to reading it inline. Anything else (a Store/Del target, an attribute —
-    neither is a value leaf) blocks."""
+    neither is a value leaf) blocks. A constant in PATTERN position blocks too:
+    it is only value-LIKE — replacing it with a name produces a capture pattern
+    (or a SyntaxError for mapping keys), never a value read."""
+    pattern_ids = [_pattern_node_ids(occ.stmts) for occ in resolved]
     for col in diff_cols:
         for i, occ in enumerate(resolved):
             node = per_occ_leaves[i][col][1]
+            if id(node) in pattern_ids[i]:
+                plan.blockers.append(
+                    "a differing position sits inside a `match` pattern "
+                    f"({_segment(occ.source, node)!r} at {occ.rel}:"
+                    f"{occ.span_lo}) — a parameter there would become a "
+                    "capture pattern, not a value, refusing")
+                return False
             is_value = isinstance(node, ast.Constant) or (
                 isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load))
             if not is_value:
@@ -637,15 +754,26 @@ def _hole_edit(first: _Occurrence, node: ast.AST, n_block_lines: int,
 def _apply_line_holes(line: str, holes: list[tuple[int, int, str]],
                       plan: RenamePlan) -> str | None:
     """Splice every ``(col_start, col_end, replacement)`` hole into ONE ``line``,
-    right-to-left so earlier columns stay valid. Returns the new line or ``None``
-    (recording a blocker) if any span is out of range."""
+    right-to-left so earlier columns stay valid. AST column offsets are UTF-8
+    BYTE offsets, so the splice works on the line's encoded bytes (exactly as
+    ``near_dup._segment`` slices) and decodes once at the end — slicing
+    characters would misplace every hole preceded by a multi-byte character on
+    its line. Returns the new line or ``None`` (recording a blocker) if any
+    span is out of range or splits a multi-byte character."""
+    raw = line.encode("utf-8")
     for c0, c1, pname in sorted(holes, key=lambda h: h[0], reverse=True):
-        if c1 > len(line.rstrip("\n")) or c0 < 0 or c0 >= c1:
+        if c1 > len(raw.rstrip(b"\n")) or c0 < 0 or c0 >= c1:
             plan.blockers.append(
                 "a differing constant's span is out of range — refusing")
             return None
-        line = line[:c0] + pname + line[c1:]
-    return line
+        raw = raw[:c0] + pname.encode("utf-8") + raw[c1:]
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        plan.blockers.append(
+            "a differing constant's span splits a multi-byte character — "
+            "refusing")
+        return None
 
 
 def _splice_first(first: _Occurrence, diff_cols: list[int],
