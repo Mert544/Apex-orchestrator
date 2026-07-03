@@ -281,6 +281,7 @@ _OPTIN_SYNTHESIS_FLAGS = (
     "strengthen_tests",
     "modernize",
     "dedup_total_return",
+    "dedup_guarded_return",
     "dedup_parameterized",
 )
 
@@ -538,7 +539,7 @@ def register_parsers(subparsers) -> None:
         help="With --actions: attach proof lines (exact diff stat + re-parse "
         "verdict + impact) to the top runnable steps (recommend-only, never applied)",
     )
-    # The eight grounded opt-in synthesis objectives the bridge can augment a
+    # The nine grounded opt-in synthesis objectives the bridge can augment a
     # --actions plan with (the develop-grade work `apex plan --concrete` already
     # LANDS). Each is default OFF so a plain --actions plan is byte-identical, and
     # INDEPENDENT (one never pulls in another). They are meaningful ONLY with
@@ -592,6 +593,13 @@ def register_parsers(subparsers) -> None:
         dest="dedup_total_return",
         help="Opt-in (with --actions): lift an always-returning exact-duplicate "
         "block into one shared returning helper",
+    )
+    ideate_parser.add_argument(
+        "--dedup-guarded-return",
+        action="store_true",
+        dest="dedup_guarded_return",
+        help="Opt-in (with --actions): lift a guard-return+fall-through "
+        "exact-duplicate block into one shared sentinel-projecting helper",
     )
     ideate_parser.add_argument(
         "--dedup-parameterized",

@@ -29,9 +29,11 @@ plain statement (that's dedup_extract's job), or any ``yield`` / ``await`` /
 ``global`` / ``nonlocal`` / nested ``def``/``lambda`` / escaping
 ``break``/``continue``. Correctness over coverage, absolutely.
 
-REVIEW-ONLY scaffolding: this builds the transform and is intentionally NOT
-registered as an objective and NOT wired into any flow. It consumes an
-EXACT-duplicate :class:`~app.engine.dedup.DuplicateBlock` (the same input
+Landed review-only first, then REGISTERED: the self-registering objective
+``app/execution/objectives/dedup_total_return.py`` pairs this planner with the
+exact-duplicate detector, and the idea-action bridge / ``apex auto`` surface it
+as the ``dedup-total-return`` opt-in (grounded on the objective's own gate). It
+consumes an EXACT-duplicate :class:`~app.engine.dedup.DuplicateBlock` (the same input
 dedup_extract takes), reusing dedup_extract's occurrence resolution, data-flow,
 signature gate, helper build, call-site rewrite, and gate-clean imports by
 import — only the control-flow admissibility rule is new here. Deterministic,
@@ -281,38 +283,74 @@ def _emit_file(rel: str, occs: list, sources: dict, trees: dict,
     return (new_source if cleaned is None else cleaned), ""
 
 
-def _helper_insert_index(container, occs: list) -> int:
+def _helper_insert_index(container, occs: list, call_lines: int = 1) -> int:
     """Index at which to splice the helper def: above the first occurrence's
     container. The anchor is an ORIGINAL-tree line number, but the bottom-up
-    replacements just collapsed each copy's span (hi-lo+1 lines) to ONE call
-    line, shrinking the buffer. ``first`` is first in EMIT order, NOT topmost in
-    the file, so a copy may sit ABOVE this container; rebase the anchor by the net
-    line-delta of every replacement whose span ends above it, or the def lands
-    inside an earlier function's body (the same above/below partition
-    inline_function uses so splice and deletions don't interfere)."""
+    replacements just collapsed each copy's span (hi-lo+1 lines) to
+    ``call_lines`` line(s) — ONE here, more for a sibling transform whose call
+    site is a multi-line guard — shrinking (or shifting) the buffer. ``first``
+    is first in EMIT order, NOT topmost in the file, so a copy may sit ABOVE
+    this container; rebase the anchor by the net line-delta of every replacement
+    whose span ends above it, or the def lands inside an earlier function's body
+    (the same above/below partition inline_function uses so splice and deletions
+    don't interfere)."""
     anchor = min(
         [container.lineno]
         + [d.lineno for d in getattr(container, "decorator_list", [])]
     )
     delta_above = sum(
-        1 - (o.span_hi - o.span_lo + 1)
+        call_lines - (o.span_hi - o.span_lo + 1)
         for o in occs if o.span_hi < anchor
     )
     return anchor - 1 + delta_above
 
 
 def _resolve_all(parsed: list, n_statements: int, sources: dict, trees: dict,
-                 plan: RenamePlan) -> list | None:
+                 plan: RenamePlan, resolver=None) -> list | None:
     """Resolve every parsed occurrence into an :class:`_Occurrence`. Any unsafe /
-    non-total-return one records its blocker (inside ``_resolve_total_return``)
-    and aborts the whole plan — returns ``None``."""
+    inadmissible one records its blocker (inside the resolver) and aborts the
+    whole plan — returns ``None``. ``resolver`` defaults to this transform's
+    :func:`_resolve_total_return`; a sibling transform (guarded-return) passes
+    its own so this loop is shared instead of copied."""
+    resolve = resolver or _resolve_total_return
     resolved: list[_Occurrence] = []
     for rel, line in parsed:  # type: ignore[misc]
-        occ = _resolve_total_return(rel, line, n_statements, sources, trees, plan)
+        occ = resolve(rel, line, n_statements, sources, trees, plan)
         if occ is None:
             return None
         resolved.append(occ)
     return resolved
+
+
+def _load_and_resolve(root: Path, block, plan: RenamePlan, resolver=None
+                      ) -> tuple[dict, dict, list, list] | None:
+    """The shared PRELUDE of the dedup control-flow transforms' ``_prepare``
+    helpers: validate the block, parse its occurrence locations, read & parse
+    every involved module, and resolve every occurrence via ``resolver``
+    (default: this transform's total-return rules; the guarded-return sibling
+    passes its own). Returns ``(sources, trees, resolved, rels)``, or ``None``
+    after the failing step recorded its own blocker. Lifted here once so the
+    siblings import it instead of carrying byte-identical copies."""
+    validated = _validate_block(block, plan)
+    if validated is None:
+        return None
+    occurrences, n_statements = validated
+
+    parsed = [_parse_occurrence(o) for o in occurrences]
+    if any(p is None for p in parsed):
+        plan.blockers.append("malformed occurrence location(s)")
+        return None
+
+    rels = sorted({rel for rel, _ in parsed})  # type: ignore[misc]
+    read = _read_modules(root, rels, plan)
+    if read is None:
+        return None
+    sources, trees = read
+
+    resolved = _resolve_all(parsed, n_statements, sources, trees, plan, resolver)
+    if resolved is None:
+        return None
+    return sources, trees, resolved, rels
 
 
 def _choose_helper_name(resolved: list, trees: dict, rels: list,
@@ -357,30 +395,16 @@ def _emit_all_files(resolved: list, sources: dict, trees: dict,
 
 def _prepare(root: Path, block, plan: RenamePlan) -> dict | None:
     """Run the whole admissibility prelude — validate the block, parse occurrence
-    locations, read & parse modules, resolve every occurrence, gate the shared
-    signature, and pick a helper name. Each step records its own blocker; the
-    first failure returns ``None``. On success returns a context dict with the
-    ``sources``/``trees``, ``resolved`` occurrences, the common ``live_in``/
-    ``live_out`` signature, the ``first`` occurrence, and the ``helper_name``."""
-    validated = _validate_block(block, plan)
-    if validated is None:
+    locations, read & parse modules, resolve every occurrence (the shared
+    :func:`_load_and_resolve` prelude), gate the shared signature, and pick a
+    helper name. Each step records its own blocker; the first failure returns
+    ``None``. On success returns a context dict with the ``sources``/``trees``,
+    ``resolved`` occurrences, the common ``live_in``/``live_out`` signature, the
+    ``first`` occurrence, and the ``helper_name``."""
+    loaded = _load_and_resolve(root, block, plan)
+    if loaded is None:
         return None
-    occurrences, n_statements = validated
-
-    parsed = [_parse_occurrence(o) for o in occurrences]
-    if any(p is None for p in parsed):
-        plan.blockers.append("malformed occurrence location(s)")
-        return None
-
-    rels = sorted({rel for rel, _ in parsed})  # type: ignore[misc]
-    read = _read_modules(root, rels, plan)
-    if read is None:
-        return None
-    sources, trees = read
-
-    resolved = _resolve_all(parsed, n_statements, sources, trees, plan)
-    if resolved is None:
-        return None
+    sources, trees, resolved, rels = loaded
 
     sig0 = _signature_gate(resolved, plan)
     if sig0 is None:

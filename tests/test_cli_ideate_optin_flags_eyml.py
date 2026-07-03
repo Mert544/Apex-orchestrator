@@ -1,10 +1,14 @@
-"""``apex ideate --actions`` exposes the EIGHT grounded opt-in synthesis
+"""``apex ideate --actions`` exposes the NINE grounded opt-in synthesis
 objectives as CLI flags.
+
+(EIGHT when this file landed; ``dedup_guarded_return`` joined as the ninth —
+the pin below iterates the map, so the count moves WITH the map, consciously.)
 
 The bridge (:class:`app.engine.idea_action_bridge.IdeaActionBridge`) has long
 accepted ``cover_gaps`` / ``wire_exports`` / ``generate_usage_doc`` /
 ``tdd_implement`` / ``strengthen_tests`` / ``modernize`` / ``dedup_total_return``
-/ ``dedup_parameterized`` on ``plan_tree`` / ``plan_roadmap`` — but they were not
+/ ``dedup_guarded_return`` / ``dedup_parameterized`` on ``plan_tree`` /
+``plan_roadmap`` — but they were originally not
 reachable from the CLI: ``apex ideate ... --tdd-implement`` errored
 "unrecognized arguments". This file pins the wiring that closes that gap:
 
@@ -51,6 +55,7 @@ _FLAG_TO_DEST = {
     "--strengthen-tests": "strengthen_tests",
     "--modernize": "modernize",
     "--dedup-total-return": "dedup_total_return",
+    "--dedup-guarded-return": "dedup_guarded_return",
     "--dedup-parameterized": "dedup_parameterized",
 }
 

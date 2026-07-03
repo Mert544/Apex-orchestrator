@@ -348,7 +348,8 @@ def _auto_memory_line(target) -> list[str]:
 # would land, so enabling them surfaces real, landable work without naming a
 # flag — honest by construction. The EXPENSIVE opt-ins (they run pytest/mutation
 # during grounding) stay behind `--deep` so cost is opt-in and disclosed.
-_AUTO_CHEAP_SYNTHESIS = ("modernize", "dedup_total_return", "dedup_parameterized")
+_AUTO_CHEAP_SYNTHESIS = ("modernize", "dedup_total_return",
+                         "dedup_guarded_return", "dedup_parameterized")
 _AUTO_DEEP_SYNTHESIS = ("cover_gaps", "tdd_implement", "strengthen_tests",
                         "wire_exports", "generate_usage_doc")
 

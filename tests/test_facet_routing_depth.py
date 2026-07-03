@@ -35,6 +35,7 @@ _NEW_ROUTES: list[tuple[str, str]] = [
     # deep nesting / duplicated logic groundings for newly-routed objectives.
     ("a trailing guard after setup", "guard-clause"),
     ("a fully-returning duplicate block", "dedup-total-return"),
+    ("a guard-returning duplicate block", "dedup-guarded-return"),
     # legacy idioms (simplify lens).
     ("percent-style string format", "percent-to-fstring"),
     ("explicit format-spec call", "format-to-fstring"),
@@ -169,7 +170,7 @@ def test_simplify_phrases_live_under_existing_rcf_groups() -> None:
     for phrase, _ in _NEW_ROUTES:
         objective = facet_to_objective(phrase)
         if objective in {"remove-unused-imports", "sort-imports", "guard-clause",
-                         "dedup-total-return"}:
+                         "dedup-total-return", "dedup-guarded-return"}:
             continue  # import-hygiene / deep-nesting / dedup live elsewhere
         homes = [g for g in _RCF_L2_GROUPS if phrase in _FACET_SUBASPECTS[g]]
         assert homes, f"{phrase!r} is under no redundant-control-flow L2 group"

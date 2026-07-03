@@ -148,6 +148,7 @@ OBJECTIVE_MANIFEST: dict[str, frozenset[str]] = {
         "dedup",
         "dedup-parameterized",
         "dedup-total-return",
+        "dedup-guarded-return",
         "dead-params",
         "shrink-functions",
         "inline-helpers",

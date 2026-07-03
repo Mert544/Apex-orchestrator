@@ -581,7 +581,7 @@ def test_counts_are_forty_one_concrete_of_eighty_three():
     from app.engine.objective_compiler import available_objectives
 
     names = set(available_objectives())
-    assert len(names) == 95  # 94 after java-final-local
+    assert len(names) == 96  # 95 -> 96: dedup-guarded-return
     assert len(classify_objectives(names)["CONCRETE"]) == 50  # finalize-module-constant (50th CONCRETE)
 
 

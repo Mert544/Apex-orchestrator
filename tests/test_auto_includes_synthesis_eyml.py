@@ -149,6 +149,7 @@ def test_synthesis_kwargs_tiering_is_deterministic(tmp_path: Path) -> None:
     ONLY under ``--deep`` — and the same flags always yield the same set."""
     cheap = m._auto_synthesis_kwargs(_parse_auto(tmp_path))
     assert cheap == {"modernize": True, "dedup_total_return": True,
+                     "dedup_guarded_return": True,
                      "dedup_parameterized": True}
     assert cheap == m._auto_synthesis_kwargs(_parse_auto(tmp_path))  # deterministic
     deep = m._auto_synthesis_kwargs(_parse_auto(tmp_path, "--deep"))

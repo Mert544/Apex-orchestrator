@@ -348,7 +348,7 @@ def test_objective_spec_is_callable():
 def test_objective_total_is_ninety_four():
     from app.engine.objective_compiler import available_objectives
 
-    assert len(set(available_objectives())) == 95
+    assert len(set(available_objectives())) == 96  # 95 -> 96: dedup-guarded-return
 
 
 def test_objective_is_reachable_from_a_facet():

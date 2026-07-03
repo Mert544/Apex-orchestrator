@@ -80,14 +80,14 @@ def test_owner_report_composes_real_apex_verdicts():
     ns = report["north_star"]
     assert ns["verdict"] == "PASS"
     assert ns["drift"] is False
-    assert ns["total_objectives"] == 95
+    assert ns["total_objectives"] == 96  # 95 -> 96: dedup-guarded-return
     assert ns["concrete_count"] == 50
     assert 0.0 <= ns["ratio"] <= 1.0
-    # Soundness: PASS with all 95 objectives declaring a proof-strategy, plus the
+    # Soundness: PASS with all 96 objectives declaring a proof-strategy, plus the
     # single-gated-writer and scope_verify allow-list booleans.
     sound = report["soundness"]
     assert sound["verdict"] == "PASS"
-    assert sound["strategies"] == "95/95"
+    assert sound["strategies"] == "96/96"  # 95 -> 96: dedup-guarded-return
     assert sound["single_writer"] is True
     assert sound["scope_verify_ok"] is True
     # Grade: the real letter + score.

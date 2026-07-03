@@ -456,6 +456,7 @@ class IdeaPermutationEngine:
         "dataclassifiable_modules": "dataclassify",
         "modernizable_modules": "modernize",
         "dedup_total_return_modules": "dedup_total_return",
+        "dedup_guarded_return_modules": "dedup_guarded_return",
         "dedup_parameterizable_modules": "dedup_parameterized",
     }
     _LANDABLE_DEEP_SIGNAL_OPERATORS: dict[str, str] = {

@@ -1192,6 +1192,11 @@ _FACT_EXPECTED = {
     # and its lander finds the actionable duplicate block/group touching it.
     "dedup-total-return": ("dedup_total_return", True),
     "dedup-parameterized": ("dedup_parameterized", True),
+    # dedup-guarded-return is the NINTH broad opt-in objective (default off,
+    # gated by ``dedup_guarded_return=True``) — the dedup family's last
+    # control-flow rung (guard return + live fall-through, sentinel projection),
+    # the same delegated CROSS-MODULE shape as its two siblings above.
+    "dedup-guarded-return": ("dedup_guarded_return", True),
 }
 
 

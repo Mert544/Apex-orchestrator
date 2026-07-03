@@ -78,6 +78,12 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     # MUST precede the "duplicated logic"/"shared helper" dedup keys below.
     "fully-returning duplicate": "dedup-total-return",
 
+    # Guard-returning duplicate block: the REMAINING control-flow slice — a
+    # guard `return` on some path AND a live fall-through (both dedup siblings
+    # refuse it; the sentinel-projection objective lifts it). MUST also precede
+    # the broad dedup keys below.
+    "guard-returning duplicate": "dedup-guarded-return",
+
     # Import-block hygiene: the "decouple → import direction" sub-aspects name the
     # two mechanical import tidies. An import nothing references is dropped
     # (remove-unused-imports); an unordered import block is sorted (sort-imports).

@@ -142,7 +142,7 @@ def test_soundness_lock_does_not_break_import_or_objective_count():
     from app.engine.objective_compiler import available_objectives
     from app.engine.soundness_audit import SOUNDNESS_STRATEGY
     names = list(available_objectives())
-    assert len(names) == 95
+    assert len(names) == 96  # 95 -> 96: dedup-guarded-return
     assert [n for n in names if n not in SOUNDNESS_STRATEGY] == []
 
 

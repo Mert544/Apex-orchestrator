@@ -84,6 +84,7 @@ OPERATOR_VALUE: dict[str, float] = {
     # --- TIER 2 — real structural improvement (behaviour-shape, not just bytes) ---
     "dedup_extract": 0.60,           # lift a duplicated block into a shared helper
     "dedup_total_return": 0.60,      # lift an always-returning duplicate block
+    "dedup_guarded_return": 0.60,    # lift a guard-return+fall-through duplicate block (sentinel projection)
     "dedup_parameterized": 0.60,     # lift near-duplicate variants into one helper
     "extract": 0.55,                 # extract a helper from a long function
     "dataclassify": 0.50,            # boilerplate __init__ -> @dataclass

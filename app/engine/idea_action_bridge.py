@@ -453,6 +453,21 @@ _FACT_ACTIONS: dict[str, tuple[str, str, bool]] = {
                             "into one shared helper — its differing constant/name "
                             "leaves become parameters (refuses a group no honest "
                             "parameterization fits)", True),
+    # dedup-guarded-return is the SAME delegated shape as dedup-total-return: it
+    # rewrites the modules carrying an exact-duplicate block with a guard return
+    # AND a live fall-through (the shape both dedup siblings refuse), lifting it
+    # verbatim into a sentinel-projecting helper. Its verify MUST be
+    # impact-scoped, so ``apply_step`` delegates it to the develop-core
+    # ``apply_rename`` path. CROSS-MODULE like its siblings; surfaced executable
+    # ONLY for a module the objective's OWN gate (``dedup_guarded_return_modules``)
+    # proves participates in a LANDABLE lift, so the claim is honest by
+    # construction.
+    "dedup-guarded-return": ("dedup_guarded_return",
+                             "Lift the guard-returning exact-duplicate block "
+                             "touching {s} into one shared helper — fall-through "
+                             "is marked by an unforgeable sentinel and each copy "
+                             "becomes a call + guard (refuses an unsafe or "
+                             "sibling-shaped block)", True),
 }
 
 
@@ -1012,6 +1027,7 @@ class IdeaActionBridge:
         # own lander (``plan_dedup_total_return`` / ``plan_near_dup_extract``), not
         # from here.
         "dedup_total_return": ["lift always-returning exact-duplicate block to shared helper"],
+        "dedup_guarded_return": ["lift guard-return+fall-through exact-duplicate block to sentinel-projecting helper"],
         "dedup_parameterized": ["parameterize near-duplicate group into shared helper"],
         # promote_staticmethod (Autonomous-39 W3a, the honest god-class flip), like
         # the dedup landers above, is NOT a SemanticPatchResult transform —
@@ -2007,6 +2023,34 @@ class IdeaActionBridge:
         return _plan
 
     @classmethod
+    def _plan_dedup_guarded_return_lander(cls):
+        """The dedup-guarded-return lander adapted to the delegated
+        ``(project_root, target)`` shape every delegated synthesis uses.
+
+        dedup-guarded-return is CROSS-MODULE — its real lander is
+        ``plan_dedup_guarded_return(root, block: DuplicateBlock)``, not
+        ``(root, rel_path)``. The target a surfaced step carries is a
+        PARTICIPATING module (exactly what ``dedup_guarded_return_modules``
+        returns), so this wrapper re-runs the objective's OWN gate
+        :func:`dedup_guarded_return._actionable_blocks`, matches the FIRST
+        actionable block whose occurrences touch that module, and DELEGATES to
+        the real ``plan_dedup_guarded_return``. An unmatched target (no
+        actionable block touches it — e.g. already lifted in a prior step)
+        yields an empty no-op :class:`RenamePlan`, so the delegated apply path
+        honestly no-ops rather than fakes a change (never a fake-green)."""
+        from app.execution.cross_file_rename import RenamePlan
+        from app.execution.dedup_guarded_return import plan_dedup_guarded_return
+        from app.execution.objectives.dedup_guarded_return import _actionable_blocks
+
+        def _plan(project_root: str, target: str) -> RenamePlan:
+            for block in _actionable_blocks(project_root):
+                if cls._unit_touches(block, target):
+                    return plan_dedup_guarded_return(project_root, block)
+            return RenamePlan(old=target, new="dedup-guarded-return")
+
+        return _plan
+
+    @classmethod
     def _plan_dedup_parameterized_lander(cls):
         """The dedup-parameterized lander adapted to the delegated ``(project_root,
         target)`` shape every delegated synthesis uses.
@@ -2344,6 +2388,10 @@ class IdeaActionBridge:
             "_plan_dedup_parameterized_lander",
             "no dedup-parameterized (no parameterizable near-duplicate group "
             "touches this module)"),
+        "dedup_guarded_return": (
+            "_plan_dedup_guarded_return_lander",
+            "no dedup-guarded-return (no guard-return+fall-through "
+            "exact-duplicate block touches this module / unsafe block)"),
         "extract_guard_clause": (
             "_plan_extract_guard_clause_lander",
             "no flatten (no guard-invertible nesting in this function/module)"),
@@ -3127,6 +3175,10 @@ class IdeaActionBridge:
             ("dedup_total_return_modules", "dedup_total_return",
              "dedup-total-return", "Refine"),
         ),
+        "dedup_guarded_return": (
+            ("dedup_guarded_return_modules", "dedup_guarded_return",
+             "dedup-guarded-return", "Refine"),
+        ),
         "dedup_parameterized": (
             ("dedup_parameterizable_modules", "dedup_parameterized",
              "dedup-parameterized", "Refine"),
@@ -3160,6 +3212,7 @@ class IdeaActionBridge:
         strengthen_tests: bool = False,
         modernize: bool = False,
         dedup_total_return: bool = False,
+        dedup_guarded_return: bool = False,
         dedup_parameterized: bool = False,
         auto: bool = False,
     ) -> tuple[tuple[str, str, str, str], ...]:
@@ -3181,6 +3234,7 @@ class IdeaActionBridge:
                  "strengthen_tests": strengthen_tests,
                  "modernize": modernize,
                  "dedup_total_return": dedup_total_return,
+                 "dedup_guarded_return": dedup_guarded_return,
                  "dedup_parameterized": dedup_parameterized}
         objectives = cls._SYNTHESIS_OBJECTIVES
         for flag, rows in cls._OPTIN_SYNTHESIS_OBJECTIVES.items():
@@ -3197,6 +3251,7 @@ class IdeaActionBridge:
                                  strengthen_tests: bool = False,
                                  modernize: bool = False,
                                  dedup_total_return: bool = False,
+                                 dedup_guarded_return: bool = False,
                                  dedup_parameterized: bool = False,
                                  auto: bool = False) -> None:
         """Append executable develop-grade synthesis steps for the qualifying
@@ -3240,6 +3295,7 @@ class IdeaActionBridge:
                                               generate_usage_doc, tdd_implement,
                                               strengthen_tests, modernize,
                                               dedup_total_return,
+                                              dedup_guarded_return,
                                               dedup_parameterized, auto)
         for signal_name, action_type, fact, phase in objectives:
             signal = getattr(sigs, signal_name)
@@ -3290,6 +3346,7 @@ class IdeaActionBridge:
         strengthen_tests: bool = False,
         modernize: bool = False,
         dedup_total_return: bool = False,
+        dedup_guarded_return: bool = False,
         dedup_parameterized: bool = False,
         auto: bool = False,
     ) -> ActionPlan:
@@ -3308,6 +3365,7 @@ class IdeaActionBridge:
                                       strengthen_tests=strengthen_tests,
                                       modernize=modernize,
                                       dedup_total_return=dedup_total_return,
+                                      dedup_guarded_return=dedup_guarded_return,
                                       dedup_parameterized=dedup_parameterized,
                                       auto=auto)
         steps = self._dedupe_steps(steps)
@@ -3371,6 +3429,7 @@ class IdeaActionBridge:
                        strengthen_tests: bool = False,
                        modernize: bool = False,
                        dedup_total_return: bool = False,
+                       dedup_guarded_return: bool = False,
                        dedup_parameterized: bool = False,
                        auto: bool = False,
                        dream_boost: dict[str, float] | None = None) -> list[ActionStep]:
@@ -3412,6 +3471,7 @@ class IdeaActionBridge:
                                       strengthen_tests=strengthen_tests,
                                       modernize=modernize,
                                       dedup_total_return=dedup_total_return,
+                                      dedup_guarded_return=dedup_guarded_return,
                                       dedup_parameterized=dedup_parameterized,
                                       auto=auto)
         steps = self._dedupe_steps(steps)
@@ -3442,6 +3502,7 @@ class IdeaActionBridge:
         strengthen_tests: bool = False,
         modernize: bool = False,
         dedup_total_return: bool = False,
+        dedup_guarded_return: bool = False,
         dedup_parameterized: bool = False,
         auto: bool = False,
         dream_boost: dict[str, float] | None = None,
@@ -3475,6 +3536,7 @@ class IdeaActionBridge:
                                     strengthen_tests=strengthen_tests,
                                     modernize=modernize,
                                     dedup_total_return=dedup_total_return,
+                                    dedup_guarded_return=dedup_guarded_return,
                                     dedup_parameterized=dedup_parameterized,
                                     auto=auto,
                                     dream_boost=dream_boost)

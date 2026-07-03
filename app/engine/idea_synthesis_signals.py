@@ -153,6 +153,7 @@ __all__ = [
     "strengthenable_modules",
     "modernizable_modules",
     "dedup_total_return_modules",
+    "dedup_guarded_return_modules",
     "dedup_parameterizable_modules",
 ]
 
@@ -582,6 +583,33 @@ def dedup_total_return_modules(
     never re-derived); ``modules`` may freely mix paths the objective never touches,
     each simply absent from the participating set."""
     from app.execution.objectives.dedup_total_return import _actionable_blocks
+
+    touched = _modules_in_actionable_units(root, _actionable_blocks)
+    return _qualifying(root, modules, lambda _rp, rel: rel in touched, limit)
+
+
+def dedup_guarded_return_modules(
+    root: str | Path, modules: Iterable[str], limit: int | None = None
+) -> list[str]:
+    """The modules participating in a LANDABLE dedup-guarded-return lift, sorted,
+    capped.
+
+    Grounded on the objective's OWN gate
+    :func:`app.execution.objectives.dedup_guarded_return._actionable_blocks` —
+    which pairs the exact-duplicate detector with the real
+    :func:`app.execution.dedup_guarded_return.plan_dedup_guarded_return` (sentinel
+    projection) and keeps only a guard-return-with-fall-through block whose plan
+    produces a non-empty ``new_contents``. A module qualifies only when it
+    PARTICIPATES in one of those actionable blocks (its rel-path is the module
+    half of a block occurrence), so a project with no provably-safe guarded-return
+    duplicate, or a module touching no actionable block, does not qualify —
+    exactly the modules ``apex develop``'s dedup-guarded-return objective would
+    rewrite, never an over-promise.
+
+    The expensive detector runs ONCE (membership is delegated to the objective's
+    gate, never re-derived); ``modules`` may freely mix paths the objective never
+    touches, each simply absent from the participating set."""
+    from app.execution.objectives.dedup_guarded_return import _actionable_blocks
 
     touched = _modules_in_actionable_units(root, _actionable_blocks)
     return _qualifying(root, modules, lambda _rp, rel: rel in touched, limit)

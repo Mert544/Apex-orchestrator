@@ -123,6 +123,11 @@ SOUNDNESS_STRATEGY: dict[str, str] = {
     "dedup": "behavior-preserving-idiom",
     "dedup-parameterized": "behavior-preserving-idiom",
     "dedup-total-return": "behavior-preserving-idiom",
+    "dedup-guarded-return": ("behavior-preserving-idiom(sentinel-projection:"
+                             "unforgeable-object()-marker+verbatim-block-lift)"
+                             "+definite-assignment-of-live-out-or-refuse"
+                             "+hazard-refuse(yield/await/global/nonlocal/"
+                             "nested-def/escaping-jump/super/__class__/del)"),
     "dead-params": "behavior-preserving-idiom",
     "shrink-functions": "behavior-preserving-idiom",
     "inline-helpers": "behavior-preserving-idiom",
