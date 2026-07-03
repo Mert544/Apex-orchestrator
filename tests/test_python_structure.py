@@ -197,9 +197,16 @@ def test_cache_respects_mtime_change(tmp_path: Path):
     assert old_key in _PARSE_CACHE
 
 
-def test_cache_makes_second_analyze_faster(tmp_path: Path):
-    # Micro-benchmark: a warm second analyze() over a multi-file tree must be
-    # dramatically faster than the cold first (read + ast.parse avoided).
+def test_cache_makes_second_analyze_faster(tmp_path: Path, monkeypatch):
+    # The warm second analyze() over a multi-file tree must be served ENTIRELY
+    # from the process-level parse cache. Pinned on the actual ast.parse CALL
+    # COUNT, not wall-clock: the old timing probe (warm_dt < cold_dt) was
+    # context-fragile — in a full gate chunk (~2800 prior tests) a GC pause
+    # landing in the warm window flipped it even though the cache worked
+    # (warm 58ms vs cold 8ms, reproduced 4x in-chunk, green solo). Counting
+    # parses asserts the SAME claim ("guard against the cache silently being
+    # bypassed") deterministically — and STRICTER: zero re-parses, not merely
+    # "faster".
     pkg = tmp_path / "many"
     pkg.mkdir()
     for i in range(40):
@@ -210,18 +217,24 @@ def test_cache_makes_second_analyze_faster(tmp_path: Path):
             encoding="utf-8",
         )
 
-    t0 = time.perf_counter()
-    cold = PythonStructureAnalyzer(tmp_path).analyze()
-    cold_dt = time.perf_counter() - t0
+    import app.tools.python_structure as ps
+    calls = {"n": 0}
+    real_parse = ps.ast.parse
 
-    t1 = time.perf_counter()
+    def counting_parse(*args, **kwargs):
+        calls["n"] += 1
+        return real_parse(*args, **kwargs)
+
+    monkeypatch.setattr(ps.ast, "parse", counting_parse)
+
+    cold = PythonStructureAnalyzer(tmp_path).analyze()
+    cold_parses = calls["n"]
     warm = PythonStructureAnalyzer(tmp_path).analyze()
-    warm_dt = time.perf_counter() - t1
+    warm_parses = calls["n"] - cold_parses
 
     assert len(cold) == len(warm) == 40
-    # Warm run is served entirely from cache; require a clear margin (not just any
-    # improvement) to guard against the cache silently being bypassed.
-    assert warm_dt < cold_dt
+    assert cold_parses >= 40  # the cold run genuinely parsed the fresh tree
+    assert warm_parses == 0   # the warm run re-parsed NOTHING — pure cache
 
 
 def test_parse_cached_returns_module_equal_to_direct_parse(tmp_path: Path):
