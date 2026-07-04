@@ -224,18 +224,40 @@ def _coverage_bar(cov: dict[str, Any]) -> str:
     )
 
 
+def _is_fixture_path(path: str) -> bool:
+    """True for example/test/fixture files, which may carry intentional risks.
+
+    Mirrors ``health_score._is_fixture_path`` / ``ProjectProfiler._is_fixture_path``:
+    the GRADE already excludes these from its security score (an
+    ``examples/legacy_bank/...`` demo vulnerability is not a real risk in this
+    project's own shipped code). ``SecurityAgent`` (which feeds this dashboard)
+    does not apply that exclusion — it deliberately keeps fixture findings in
+    the raw scan so nothing is silently dropped — so the dashboard must
+    instead DISCLOSE which findings are excluded-from-grade fixtures rather
+    than let them read as undifferentiated real risk.
+    """
+    p = path.replace("\\", "/").lower()
+    return (
+        p.startswith(("examples/", "example/", "tests/", "test/", "fixtures/"))
+        or "/examples/" in p or "/tests/" in p or "/fixtures/" in p
+        or Path(p).name.startswith("test_")
+    )
+
+
 def _findings_chips(findings: dict[str, dict[str, Any]]) -> str:
     sec = findings.get("security", {})
     doc = findings.get("docstring", {})
     dep = findings.get("dependency", {})
-    return "".join(
-        [
-            _chip("security findings", sec.get("findings_count", "—")),
-            _chip("missing docstrings", doc.get("gaps_found", "—")),
-            _chip("dependency edges", dep.get("total_edges", "—")),
-            _chip("circular imports", len(dep.get("circular_imports", []) or [])),
-        ]
-    )
+    chips = [
+        _chip("security findings", sec.get("findings_count", "—")),
+        _chip("missing docstrings", doc.get("gaps_found", "—")),
+        _chip("dependency edges", dep.get("total_edges", "—")),
+        _chip("circular imports", len(dep.get("circular_imports", []) or [])),
+    ]
+    fixture_n = sum(1 for f in (sec.get("findings", []) or []) if _is_fixture_path(str(f.get("file", ""))))
+    if fixture_n:
+        chips.append(_chip("intentional fixtures (excluded from grade)", fixture_n))
+    return "".join(chips)
 
 
 def _findings_exposures(shown: list[dict[str, Any]], project_root: str) -> list[str]:
@@ -257,9 +279,18 @@ def _findings_row(f: dict[str, Any], exposure: str) -> str:
     issue = (
         f.get("details") or f.get("risk_type") or f.get("issue") or f.get("risk") or ""
     )
+    # Disclose, never silently drop: a finding inside an example/test/fixture
+    # file is excluded from the GRADE (health_score._is_fixture_path) because
+    # it is often an intentional demo vulnerability, not a real one — but
+    # hiding it here entirely would be the opposite failure (a security scan
+    # that quietly under-reports). Label it in place instead.
+    note = (
+        " <em class='fixture-note'>(intentional fixture — excluded from grade)</em>"
+        if _is_fixture_path(str(f.get("file", ""))) else ""
+    )
     return (
         f"<tr><td><code>{_esc(f.get('file', '?'))}:{_esc(f.get('line', '?'))}</code></td>"
-        f"<td>{_esc(issue)}</td><td>{_severity_badge(f.get('severity', ''))}</td>"
+        f"<td>{_esc(issue)}{note}</td><td>{_severity_badge(f.get('severity', ''))}</td>"
         f"<td>{_esc(exposure)}</td></tr>"
     )
 

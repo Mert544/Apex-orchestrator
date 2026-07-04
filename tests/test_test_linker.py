@@ -1,6 +1,17 @@
+import ast
 from pathlib import Path
 
-from app.tools.test_linker import TestLinker, count_test_functions
+from app.tools.test_linker import (
+    TestLinker,
+    _call_name,
+    _contains_standalone,
+    _loader_call_py_args,
+    _parse_test_references,
+    _resolved_import_names,
+    _stem_names_module,
+    _stem_tokens,
+    count_test_functions,
+)
 
 
 def test_count_test_functions_counts_across_files_and_methods(tmp_path: Path):
@@ -199,3 +210,212 @@ def test_build_test_index_empty_project(tmp_path: Path):
     assert result.module_to_tests == {}
     assert result.untested_modules == []
     assert result.critical_untested_modules == []
+
+
+# --------------------------------------------------------------------------- #
+# Name-order/convention blind spot (ÇAĞ2-W11): the linker's fallback heuristics
+# used raw, unanchored substring checks that could CLAIM a link that did not
+# exist -- a short/common module stem (or its parent dir name) merely being a
+# PREFIX of an unrelated word, or co-occurring anywhere independently in
+# 100+ lines of unrelated source, is not evidence of a real reference. These
+# pin the specific false-claim shapes found (and fixed) plus the true shapes
+# that must keep working.
+# --------------------------------------------------------------------------- #
+
+def test_stem_tokens_splits_on_underscore_and_drops_empties():
+    assert _stem_tokens("stub_synthesis") == ["stub", "synthesis"]
+    # A leading/doubled underscore (the "_private_module" convention's
+    # "test__private_module" test file) must not produce a blank token.
+    assert _stem_tokens("_base") == ["base"]
+    assert _stem_tokens("test__base") == ["test", "base"]
+    assert _stem_tokens("") == []
+
+
+def test_stem_names_module_whole_token_match_not_bare_substring():
+    # The real bug: "_base" is a raw substring of "baseline", a DIFFERENT word.
+    assert not _stem_names_module("_base", "test_baseline_red")
+    assert not _stem_names_module("_base", "test_cli_gate_baseline")
+    # A real, exact stem match still counts.
+    assert _stem_names_module("_base", "test__base")
+    # A qualified prefix before the module's own whole word still counts
+    # (an accepted, pre-existing test-naming convention in this project).
+    assert _stem_names_module("_base", "test_agent_base")
+    # No module tokens at all (pathological empty stem) never matches.
+    assert not _stem_names_module("", "test_anything")
+
+
+def test_contains_standalone_rejects_identifier_prefix_collision():
+    # "import _base_name" contains the literal substring "import _base", but
+    # _base_name is a DIFFERENT, longer identifier -- not a reference to _base.
+    assert not _contains_standalone("from x import _base_name", "import _base")
+    # A fixture class "_Base" is not a reference to a "_base" module either.
+    assert not _contains_standalone("class _basefactory: pass", "_base")
+    # The real, standalone occurrence still matches.
+    assert _contains_standalone("import _base\n", "import _base")
+    assert _contains_standalone("x = _base + 1", "_base")
+    # An empty needle never matches (nothing to claim).
+    assert not _contains_standalone("anything", "")
+
+
+def test_resolved_import_names_plain_and_from_import():
+    tree = ast.parse("import a.b.c\nfrom d.e import f, g\n")
+    imp, frm = tree.body
+    assert _resolved_import_names(imp) == ["a.b.c"]
+    assert _resolved_import_names(frm) == ["d.e.f", "d.e.g"]
+
+
+def test_resolved_import_names_skips_relative_and_star():
+    tree = ast.parse("from . import x\nfrom .sub import y\nfrom a import *\n")
+    rel_bare, rel_sub, star = tree.body
+    assert _resolved_import_names(rel_bare) == []
+    assert _resolved_import_names(rel_sub) == []
+    assert _resolved_import_names(star) == []
+
+
+def test_parse_test_references_multi_name_parenthesized_import():
+    # The confirmed regression shape: "from pkg import (a, b, c)" never places
+    # the package prefix and a submodule name next to each other in the
+    # source, so a flat text search cannot see it -- the AST resolver must.
+    src = "from app.execution.semantic.transforms import (\n    extract_method,\n    inline_variable,\n    move_class,\n)\n"
+    refs = _parse_test_references(src)
+    assert "app.execution.semantic.transforms.inline_variable" in refs.imports
+    assert "app.execution.semantic.transforms.move_class" in refs.imports
+    assert "app.execution.semantic.transforms.extract_method" in refs.imports
+
+
+def test_parse_test_references_unparseable_source_is_empty():
+    refs = _parse_test_references("def broken(:\n")
+    assert refs.imports == frozenset()
+    assert refs.loaded_filenames == frozenset()
+
+
+def test_call_name_bare_and_attribute():
+    tree = ast.parse("_load('x.py')\nimportlib.util.spec_from_file_location('x', 'y')\nfoo()()\n")
+    bare_call, attr_call, weird_call = (n.value for n in tree.body)
+    assert _call_name(bare_call) == "_load"
+    assert _call_name(attr_call) == "spec_from_file_location"
+    assert _call_name(weird_call) == ""  # a called call result has no name
+
+
+def test_loader_call_py_args_requires_load_named_call():
+    # A "load"-named call's bare ".py" argument is a real loaded-filename claim.
+    loader = ast.parse("_load('preflight.py')").body[0].value
+    assert _loader_call_py_args(loader) == ["preflight.py"]
+    # The SAME string, passed to an unrelated call (e.g. writing a fixture
+    # file), is not evidence this file was ever loaded as a module.
+    non_loader = ast.parse("write_text('preflight.py')").body[0].value
+    assert _loader_call_py_args(non_loader) == []
+    # A path-like argument (contains "/") is left to the dotted/path-style
+    # fallback checks, not claimed here.
+    pathlike = ast.parse("_load('scripts/preflight.py')").body[0].value
+    assert _loader_call_py_args(pathlike) == []
+    # A keyword argument is covered too.
+    kw = ast.parse("_load(name='preflight.py')").body[0].value
+    assert _loader_call_py_args(kw) == ["preflight.py"]
+
+
+def _write(root: Path, rel: str, text: str) -> None:
+    path = root / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def test_prefix_collision_stem_does_not_falsely_link(tmp_path: Path):
+    # module: pkg/_base.py. An UNRELATED test merely starting with the same
+    # letters ("baseline") must not be claimed as covering it (before the
+    # fix, a bare "module_stem in test_stem" substring check claimed it).
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/_base.py", "def f():\n    return 1\n")
+    _write(tmp_path, "tests/test_baseline_unrelated.py", "def test_x():\n    assert True\n")
+    _write(tmp_path, "tests/test__base.py", "import pkg._base\n\n\ndef test_x():\n    assert pkg._base\n")
+
+    coverage = TestLinker(tmp_path).analyze()
+    linked = coverage.module_to_tests["pkg/_base.py"]
+    assert "tests/test_baseline_unrelated.py" not in linked
+    assert "tests/test__base.py" in linked
+
+
+def test_independent_cooccurrence_does_not_link_but_adjacency_does(tmp_path: Path):
+    # module: objectives/_base.py (parent dir "objectives", stem "_base").
+    _write(tmp_path, "objectives/__init__.py", "")
+    _write(tmp_path, "objectives/_base.py", "def f():\n    return 1\n")
+    # This test merely mentions "objectives" (unrelated import) and "_base"
+    # (an unrelated fixture class) independently -- not a real reference.
+    _write(
+        tmp_path, "tests/test_unrelated_objectives_thing.py",
+        "from app.objectives import add_final  # some other objective\n\n"
+        "def test_x():\n    src = 'class _Base:\\n    pass\\n'\n    assert src\n",
+    )
+    # This test references the module via an adjacent, qualified mention.
+    _write(
+        tmp_path, "tests/test_calls_it_directly.py",
+        "def test_x():\n    # see objectives._base for the shared helper\n    assert True\n",
+    )
+
+    coverage = TestLinker(tmp_path).analyze()
+    linked = coverage.module_to_tests["objectives/_base.py"]
+    assert "tests/test_unrelated_objectives_thing.py" not in linked
+    assert "tests/test_calls_it_directly.py" in linked
+
+
+def test_dynamic_loader_by_filename_links_but_fixture_write_does_not(tmp_path: Path):
+    # scripts/ is a real, common case in this project: a standalone script not
+    # set up as an importable package, exercised via a small `_load(name)`
+    # helper around importlib.util.spec_from_file_location.
+    _write(tmp_path, "scripts/preflight.py", "def decide():\n    return True\n")
+    _write(
+        tmp_path, "tests/test_scripts_tooling.py",
+        "import importlib.util\nfrom pathlib import Path\n\n"
+        "ROOT = Path(__file__).resolve().parents[1]\n\n"
+        "def _load(name):\n"
+        "    path = ROOT / 'scripts' / name\n"
+        "    spec = importlib.util.spec_from_file_location(name[:-3], path)\n"
+        "    mod = importlib.util.module_from_spec(spec)\n"
+        "    spec.loader.exec_module(mod)\n"
+        "    return mod\n\n"
+        "def test_decide():\n"
+        "    pf = _load('preflight.py')\n"
+        "    assert pf.decide()\n",
+    )
+    # An UNRELATED module elsewhere, mentioned only as a FIXTURE filename being
+    # WRITTEN (not loaded) in some other test, must not be claimed. Using a
+    # name that collides with no "load"-named call anywhere isolates this from
+    # the (separately accepted) same-bare-filename-in-two-dirs ambiguity the
+    # loader-call signal shares with the existing exact-stem-match rule.
+    _write(tmp_path, "other/unrelated_thing.py", "def unrelated():\n    return 0\n")
+    _write(
+        tmp_path, "tests/test_writes_a_fixture_file.py",
+        "def test_x(tmp_path):\n"
+        "    (tmp_path / 'unrelated_thing.py').write_text('def unrelated(): return 0')\n"
+        "    assert True\n",
+    )
+
+    coverage = TestLinker(tmp_path).analyze()
+    assert "tests/test_scripts_tooling.py" in coverage.module_to_tests["scripts/preflight.py"]
+    assert "other/unrelated_thing.py" in coverage.untested_modules
+    assert "tests/test_writes_a_fixture_file.py" not in coverage.module_to_tests["other/unrelated_thing.py"]
+
+
+# --------------------------------------------------------------------------- #
+# Live probe (real repo): per-module linkage for the 5 recently-landed
+# characterization test files the wave was asked to investigate. None of them
+# is missed by the linker's own exact-stem-match path; this pins that fact so
+# a future change to _find_linked_tests cannot silently regress it.
+# --------------------------------------------------------------------------- #
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_recently_landed_characterization_tests_are_all_linked():
+    coverage = TestLinker(_REPO_ROOT).analyze()
+    expected = {
+        "app/execution/stub_synthesis.py": "tests/test_stub_synthesis.py",
+        "app/execution/objectives/_base.py": "tests/test__base.py",
+        "app/execution/protocol_scaffold.py": "tests/test_protocol_scaffold.py",
+        "app/execution/_transform_base.py": "tests/test__transform_base.py",
+        "scripts/wave_common.py": "tests/test_wave_common.py",
+    }
+    for module, expected_test in expected.items():
+        linked = coverage.module_to_tests.get(module)
+        assert linked is not None, f"{module} was not even discovered as a module"
+        assert expected_test in linked, f"{module} is missing its own {expected_test}: linked={linked}"
