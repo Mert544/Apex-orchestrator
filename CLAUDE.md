@@ -47,8 +47,22 @@ built is excellent and stays — but it is *done enough*; lead with development.
 3. Prove value the way a buyer/user sees it: run Apex's `develop` loop on an
    **independent** project and show the **tangible artifacts** it produced
    (real diffs: code, tests, scaffolding) — not just analysis.
-4. Apex itself stays **LLM-free / zero-token** — that IS the product. (Claude is
-   only the orchestrator wiring; Apex's own output must never depend on an LLM.)
+4. Apex itself stays **LLM-free / zero-token** at its CORE — the deterministic,
+   offline, proof-carrying engine is the product's foundation and must remain
+   fully functional with no LLM anywhere. **AMENDED by founder decision
+   (2026-07-04, "kuralı yumuşatabiliriz"):** an **OPT-IN proposal lane** is now
+   permitted — the user's own LLM (API or local open model) may PROPOSE candidate
+   diffs, but every proposal passes the SAME gates as deterministic moves
+   (impact-scope verify, delta-green, auto-rollback, proof-of-fix) and is
+   honestly attributed ("LLM-proposed, Apex-verified"). Nothing lands
+   unverified; with the lane disabled, behavior is byte-identical to the
+   zero-token core. (Claude remains only the orchestrator wiring.)
+5. **Market-value priority (founder, 2026-07-04):** while developing Apex, the
+   standing priority is that it **produces value in the market and earns
+   revenue** — distribution surfaces (quickstart, GitHub bot/App, closed-network
+   licensing) and external-validation pilots rank alongside core capability.
+   Positioning: dual pitch — "zero-token mechanical work" + "the trust rails
+   for LLM coding agents".
 
 ## 🔎 The Mission Auditor ("denetçi") — standing discipline
 
