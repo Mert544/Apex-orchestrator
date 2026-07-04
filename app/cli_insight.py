@@ -934,23 +934,87 @@ def cmd_agenda(args: argparse.Namespace) -> int:
     return 0
 
 
+def _vault_diff_index(raw: str) -> tuple[int | None, str]:
+    """Parse a ``--diff`` value into ``(index, error)``. An empty string means
+    "latest" (``index=None``, no error); an unparseable value is reported as
+    an honest error string rather than raising."""
+    if not raw:
+        return None, ""
+    try:
+        return int(raw), ""
+    except ValueError:
+        return None, f"`{raw}` is not a valid snapshot index (expected a whole number)"
+
+
+def _cmd_vault_diff(target: Path, view: dict, raw_diff: str, as_json: bool) -> None:
+    """The ``--diff`` seam: print a snapshot-vs-live delta, or an honest note
+    plus the current vault (mirrors ``cmd_grade``'s ``--diff`` fallback) when
+    the value is unparseable or no matching snapshot exists."""
+    from app.memory.vault import render_vault_markdown
+    from app.memory.vault_history import (
+        available_indices, diff_vault, load_snapshot, render_vault_diff_markdown,
+    )
+
+    index, error = _vault_diff_index(raw_diff)
+    if not error:
+        snapshot = load_snapshot(target, index)
+        if snapshot is not None:
+            diff = diff_vault(snapshot["view"], view)
+            if as_json:
+                print(json.dumps({
+                    "snapshot_index": snapshot["index"],
+                    "snapshot_label": snapshot.get("label", ""),
+                    **diff.to_dict(),
+                }, sort_keys=True, indent=2, ensure_ascii=False))
+            else:
+                print(render_vault_diff_markdown(
+                    diff, snapshot["index"], snapshot.get("label", "")))
+            return
+        have = available_indices(target)
+        note = f"_No snapshot #{index} found" if index is not None else "_No snapshot saved yet"
+        if have:
+            note += f" (available: {', '.join(str(i) for i in have)})"
+        error = note + " — save one first with `apex vault --save`._"
+    print(error + "\n")
+    if as_json:
+        print(json.dumps(view, sort_keys=True, indent=2, ensure_ascii=False))
+    else:
+        print(render_vault_markdown(view))
+
+
 def cmd_vault(args: argparse.Namespace) -> int:
     """Refresh and show the Apex vault: ONE deterministic roll-up of the
     project's persistent memory stores (idea-memory, dream journal, dream
     digest, proof-of-fix + derived track record). Mirrors the live stores
     losslessly into ``.apex/vault/vault.json`` (single-writer, rebuildable);
-    absent stores are reported honestly. Read-only over the sources; LLM-free;
-    always exits 0 (an empty vault is honest state, not an error)."""
+    absent stores are reported honestly. ``--save [LABEL]`` snapshots the
+    current view under ``.apex/vault/snapshots/`` (index-keyed, no clock);
+    ``--diff [INDEX]`` shows an honest, deterministic delta between a saved
+    snapshot (latest by default) and the live vault. Read-only over every
+    source store; LLM-free; always exits 0 (an empty vault, or no snapshot
+    yet, is honest state, not an error)."""
     from app.memory.vault import load_vault_view, render_vault_markdown, write_vault
 
     target = Path(args.target).resolve() if args.target else _get_project_root()
     if args.refresh:
         write_vault(target)
     view = load_vault_view(target)
-    if args.json:
+
+    diff_arg = getattr(args, "diff", None)
+    if diff_arg is not None:
+        _cmd_vault_diff(target, view, diff_arg, args.json)
+    elif args.json:
         print(json.dumps(view, sort_keys=True, indent=2, ensure_ascii=False))
     else:
         print(render_vault_markdown(view))
+
+    save_arg = getattr(args, "save", None)
+    if save_arg is not None:
+        from app.memory.vault_history import save_snapshot
+
+        ref = save_snapshot(target, view, label=save_arg)
+        label_note = f' ("{ref["label"]}")' if ref["label"] else ""
+        print(f"[vault] Snapshot #{ref['index']} saved{label_note} → {ref['path']}")
     return 0
 
 
@@ -1494,6 +1558,14 @@ def register_parsers(subparsers) -> None:
         "--refresh", action="store_true",
         help="Rewrite .apex/vault/vault.json from the live stores first "
              "(byte-identical when nothing changed)")
+    vault_parser.add_argument(
+        "--save", nargs="?", const="", default=None, metavar="LABEL",
+        help="Snapshot the current vault under .apex/vault/snapshots/ "
+             "(monotonic index, no wall-clock; optional LABEL travels with it)")
+    vault_parser.add_argument(
+        "--diff", nargs="?", const="", default=None, metavar="INDEX",
+        help="Show an honest, deterministic delta between a saved snapshot "
+             "(latest by default, or snapshot INDEX) and the live vault")
     vault_parser.set_defaults(func=cmd_vault)
 
     # agenda — what should this project do next (three honest lanes)

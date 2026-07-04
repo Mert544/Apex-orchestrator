@@ -28,6 +28,12 @@ apex-vizyon-yasayan-asistan.md``):
   vault never fabricates memory for a project Apex has not worked on.
 * **Deterministic** — same stores → byte-identical vault (sorted keys, no
   clocks, no randomness), so a vault diff is a REAL memory change.
+* **Timeline (vault-timeline addition)** — ``apex vault --save`` snapshots
+  this view under ``.apex/vault/snapshots/<index>.json`` (own writer domain,
+  index-keyed rather than time-keyed — no clock in the content, same rule as
+  above) and ``apex vault --diff`` renders an honest, deterministic delta
+  between a saved snapshot and the live view — the owner's "what changed
+  while I was away?" surface. See :mod:`app.memory.vault_history`.
 """
 
 from __future__ import annotations
