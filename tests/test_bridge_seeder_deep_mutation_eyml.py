@@ -1228,6 +1228,13 @@ _FACT_EXPECTED = {
     # near-duplicate group, the shape bare dedup-parameterized refuses), the
     # same delegated CROSS-MODULE shape as its siblings above.
     "dedup-parameterized-total-return": ("dedup_parameterized_total_return", True),
+    # W99b: dedup-parameterized-guarded-return is the ELEVENTH broad opt-in
+    # objective (default off, gated by ``dedup_parameterized_guarded_return=True``)
+    # — the near-dup family's guarded rung (a guard-returning near-duplicate
+    # group with live fall-through, sentinel projection), completing the
+    # parameterized matrix; the same delegated CROSS-MODULE shape as its
+    # siblings above.
+    "dedup-parameterized-guarded-return": ("dedup_parameterized_guarded_return", True),
 }
 
 
