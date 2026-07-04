@@ -17,6 +17,17 @@ with``, frame/namespace reflection, ``global``/``nonlocal``-declared names the
 run binds or reads). Strictly refuse-direction: a rail can only turn an
 unsound accept into a blocker.
 
+W99b-fix: a SEPARATE, earlier rail lives here too — :func:`_unbound_live_in_reason`
+— closing a shipped family-wide gap: every live-in name a resolver hands to
+``_data_flow`` must be DEFINITELY bound before its run even starts (a
+parameter, or a direct top-level prelude assignment — :func:`_bound_before_run`
+/ :func:`_definitely_assigned`), or the eager call-argument evaluation every
+lane emits can raise ``UnboundLocalError`` on a path where the original never
+touched the name at all. Every resolver (``dedup_extract._resolve_occurrence``,
+``dedup_total_return._total_return_occurrence``,
+``dedup_guarded_return._resolve_guarded_return``, and — by delegation — both
+near-dup parameterized siblings) calls it right after computing ``live_in``.
+
 This is a **library** (leading underscore in the filename) — it is never an
 objective and exposes no ``plan_*`` entry point. It imports nothing from the
 transforms (only the plan type it stamps), so it can never form an import cycle
@@ -154,6 +165,83 @@ def _bound_names(nodes: list) -> set[str]:
             if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
                 out.add(n.id)
     return out
+
+
+def _definitely_assigned(run: list) -> set[str]:
+    """Names DEFINITELY bound when control falls off the end of ``run``.
+
+    Reaching the fall-through exit means every DIRECT (top-level) statement of
+    the run executed to completion, so the Name targets of a direct
+    ``Assign`` / ``AugAssign`` / valued ``AnnAssign`` are guaranteed bound. A
+    name bound only inside an ``if``/loop body, a ``for`` target (zero
+    iterations skip it), a ``with`` body, or a walrus in a short-circuit
+    position may be SKIPPED on the fall-through path, so none of those count.
+    Conservative by design — under-approximating definite assignment can only
+    refuse a liftable block, never mis-lift one.
+
+    W99b-fix: moved here (from ``dedup_guarded_return``, its original home)
+    so the family-wide live-in rail below can share it without an import
+    cycle; re-exported from ``dedup_guarded_return`` for its own pinned
+    tests (``tests/test_dedup_guarded_return.py`` imports it directly)."""
+    out: set[str] = set()
+    for stmt in run:
+        if isinstance(stmt, ast.Assign):
+            targets = stmt.targets
+        elif isinstance(stmt, ast.AugAssign):
+            targets = [stmt.target]
+        elif isinstance(stmt, ast.AnnAssign) and stmt.value is not None:
+            targets = [stmt.target]
+        else:
+            continue
+        for target in targets:
+            for n in ast.walk(target):
+                if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
+                    out.add(n.id)
+    return out
+
+
+def _bound_before_run(fn, before: list) -> set[str]:
+    """Names guaranteed bound by the time control REACHES ``run`` at all: the
+    enclosing function's own parameters, plus any name :func:`_definitely_assigned`
+    by a direct top-level statement of ``before`` (the prelude preceding the
+    run). A name bound only CONDITIONALLY in the prelude (inside an
+    ``if``/loop/``with``) is excluded — some execution path reaches the run
+    without ever having bound it."""
+    return _function_param_names(fn) | _definitely_assigned(before)
+
+
+def _unbound_live_in_reason(live_in: list, bound_before: set[str]) -> str | None:
+    """W99b-fix (family-wide, shipped-bug closure): every LIVE-IN name must be
+    in ``bound_before`` (:func:`_bound_before_run`), or ``None`` when they all
+    are.
+
+    ``_data_flow``'s ``live_in`` is *reads(run) ∩ (params ∪ stores(before))* —
+    it counts a name bound only CONDITIONALLY in the prelude (``if cond: acc =
+    1``) as live-in the moment the run reads it anywhere, however deep inside
+    an ``if``. Every dedup-family lane then emits live-in names as EAGER call
+    arguments (``helper(acc, ...)``): Python evaluates every argument before
+    the call, regardless of the callee's own control flow. So when the run
+    itself contains a guard that the ORIGINAL code would take before ever
+    reading the name (a guard-return before the read, or the read sitting
+    behind its own conditional inside the run), the original never touches an
+    unbound ``acc`` on that path — but the lifted call touches it
+    unconditionally, raising ``UnboundLocalError`` where the original raised
+    nothing. Probe-verified (machine-checked) live on the shipped exact
+    guarded-return lane and, by the same shared ``_data_flow`` computation,
+    on dedup_extract (plain and tail-return), dedup_total_return, and both
+    near-dup parameterized siblings (they resolve occurrences via these same
+    functions). Refuse-direction only: under-approximating "bound before" can
+    only refuse a liftable block, never mis-lift one — a live-in name that
+    happens to be read unconditionally at the very top of the run before any
+    guard would never actually diverge, but this rail refuses it anyway
+    rather than prove that finer distinction."""
+    unbound = sorted(set(live_in) - bound_before)
+    if unbound:
+        return (f"{', '.join(unbound)} may be unbound before the range even "
+                "runs (no parameter/direct top-level assignment binds it "
+                "first) — evaluating it eagerly as a call argument could "
+                "raise where the original never read it")
+    return None
 
 
 def _run_context(fn, run: list) -> tuple[list, list]:

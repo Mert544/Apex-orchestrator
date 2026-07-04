@@ -151,7 +151,8 @@ def test_synthesis_kwargs_tiering_is_deterministic(tmp_path: Path) -> None:
     assert cheap == {"modernize": True, "dedup_total_return": True,
                      "dedup_guarded_return": True,
                      "dedup_parameterized": True,
-                     "dedup_parameterized_total_return": True}
+                     "dedup_parameterized_total_return": True,
+                     "dedup_parameterized_guarded_return": True}
     assert cheap == m._auto_synthesis_kwargs(_parse_auto(tmp_path))  # deterministic
     deep = m._auto_synthesis_kwargs(_parse_auto(tmp_path, "--deep"))
     assert deep == {name: True for name in

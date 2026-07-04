@@ -41,7 +41,10 @@ multi-line string/bytes/f-string constants, reflection, pre-run closures,
 invisible non-``Name`` bindings, ``global``/``nonlocal``-declared names, and
 a ``class`` statement anywhere in the run), docstring-position runs,
 structural template drift, and the leaf-path/diff-count/detector
-re-verification. PER-OCCURRENCE checks stay load-bearing throughout.
+re-verification, and (W99b-fix) the live-in bound-before-run rail —
+``_total_return_occurrence`` refuses a live-in name that is only
+conditionally bound in the prelude before ``_data_flow`` ever sees it.
+PER-OCCURRENCE checks stay load-bearing throughout.
 
 Deterministic, stdlib-only; no time, randomness, network, or identity
 strings.
@@ -97,8 +100,9 @@ def _resolve_parameterized_total_return(
         return None
 
     # Same admitted-run tail dedup_total_return's own resolver uses (shared,
-    # not duplicated — see _total_return_occurrence's docstring).
-    return _total_return_occurrence(rel, source, fn, container, run)
+    # not duplicated — see _total_return_occurrence's docstring). Inherits
+    # the W99b-fix live-in bound-before-run rail for free.
+    return _total_return_occurrence(rel, source, fn, container, run, plan)
 
 
 def plan_near_dup_total_return(project_root: str | Path, group) -> RenamePlan:

@@ -35,6 +35,16 @@ FACET_OBJECTIVE_MAP: dict[str, str] = {
     "always-returning near-duplicate": "dedup-parameterized-total-return",
     "parameterize the returning variants": "dedup-parameterized-total-return",
 
+    # Guard-return near-duplicate variants: the near-dup family's THIRD
+    # control-flow rung (dedup-parameterized-guarded-return) — a near-dup
+    # group whose block has a guard `return` on some path AND a live
+    # fall-through (the shape both bare dedup-parameterized and its
+    # total-return sibling refuse). MUST precede BOTH the "parameterize the
+    # variants" near-dup keys below (which "parameterize the guarded
+    # variants" contains) and the broader ``parameterize`` key further down.
+    "guard-returning near-duplicate": "dedup-parameterized-guarded-return",
+    "parameterize the guarded variants": "dedup-parameterized-guarded-return",
+
     # Near-duplicate variants: blocks identical but for a few leaves are lifted
     # into ONE parameterized helper. These phrasings (the "parameterize the
     # variants" sub-aspect of "duplicated logic") describe the varying axis, so

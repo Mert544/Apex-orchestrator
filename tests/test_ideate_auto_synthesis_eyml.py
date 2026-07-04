@@ -1,5 +1,5 @@
 """``apex ideate --actions --auto`` AUTONOMOUSLY includes every APPLICABLE
-synthesis objective — so a user need not memorize/type the ten opt-in flags.
+synthesis objective — so a user need not memorize/type the eleven opt-in flags.
 
 The bridge already gates each opt-in synthesis objective behind its own flag
 (``cover_gaps`` / ``wire_exports`` / ... / ``dedup_parameterized_total_return``);
@@ -172,7 +172,7 @@ def test_auto_surfaces_both_applicable_objectives(tmp_path: Path) -> None:
 
 def test_auto_matches_naming_both_flags(tmp_path: Path) -> None:
     """``--auto`` is EQUIVALENT to passing every flag by name: the plan under
-    ``--auto`` matches the same plan with all ten opt-in flags set explicitly.
+    ``--auto`` matches the same plan with all eleven opt-in flags set explicitly.
 
     (``--auto`` == "all flags", not "the two I'd guess apply" — objectives can
     interact within one run, e.g. cover-gaps writes a test that strengthen-tests
@@ -221,7 +221,7 @@ def test_auto_is_honest_only_applicable_surfaces(tmp_path: Path) -> None:
 def test_default_no_auto_is_byte_identical_and_deterministic(
         tmp_path: Path) -> None:
     """With NO ``--auto`` (and no individual flag) the ``--actions`` output is
-    byte-for-byte identical run-to-run, and surfaces NONE of the ten opt-in
+    byte-for-byte identical run-to-run, and surfaces NONE of the eleven opt-in
     objectives — proving the new mode does not shift the default plan."""
     # Independent copies so neither default run's engine side effects perturb
     # the other; the default plan writes no synthesis patch, so it is stable.
@@ -269,10 +269,10 @@ def test_enabled_objectives_auto_returns_all_optin_rows() -> None:
     assert auto_objectives[:len(bridge._SYNTHESIS_OBJECTIVES)] == \
         bridge._SYNTHESIS_OBJECTIVES
     # auto == passing every individual flag True.
-    # TEN flags since dedup-parameterized-total-return joined as the tenth
-    # opt-in (96 -> 97 wave); auto must still equal every-flag-True.
+    # ELEVEN flags since dedup-parameterized-guarded-return joined as the
+    # eleventh opt-in (97 -> 98 wave); auto must still equal every-flag-True.
     all_flags = bridge._enabled_objectives(
-        True, True, True, True, True, True, True, True, True, True)
+        True, True, True, True, True, True, True, True, True, True, True)
     assert auto_objectives == all_flags
 
 

@@ -1,20 +1,21 @@
-"""``apex ideate --actions`` exposes the TEN grounded opt-in synthesis
+"""``apex ideate --actions`` exposes the ELEVEN grounded opt-in synthesis
 objectives as CLI flags.
 
 (EIGHT when this file landed; ``dedup_guarded_return`` joined as the ninth,
-``dedup_parameterized_total_return`` as the tenth — the pin below iterates
-the map, so the count moves WITH the map, consciously.)
+``dedup_parameterized_total_return`` as the tenth, and
+``dedup_parameterized_guarded_return`` as the eleventh — the pin below
+iterates the map, so the count moves WITH the map, consciously.)
 
 The bridge (:class:`app.engine.idea_action_bridge.IdeaActionBridge`) has long
 accepted ``cover_gaps`` / ``wire_exports`` / ``generate_usage_doc`` /
 ``tdd_implement`` / ``strengthen_tests`` / ``modernize`` / ``dedup_total_return``
 / ``dedup_guarded_return`` / ``dedup_parameterized`` /
-``dedup_parameterized_total_return`` on ``plan_tree`` /
-``plan_roadmap`` — but they were originally not
+``dedup_parameterized_total_return`` / ``dedup_parameterized_guarded_return``
+on ``plan_tree`` / ``plan_roadmap`` — but they were originally not
 reachable from the CLI: ``apex ideate ... --tdd-implement`` errored
 "unrecognized arguments". This file pins the wiring that closes that gap:
 
-  - RECOGNITION: each of the ten ``--...`` flags parses through the REAL
+  - RECOGNITION: each of the eleven ``--...`` flags parses through the REAL
     ideate argparser (no "unrecognized arguments"); every flag defaults False;
     setting one flag sets ONLY its own attribute (independent at parse time).
   - SURFACING (end-to-end through ``cmd_ideate`` on a real tmp_path project
@@ -22,7 +23,7 @@ reachable from the CLI: ``apex ideate ... --tdd-implement`` errored
     ``modernize`` step for a stale-idiom module; ``--cover-gaps`` surfaces a
     ``cover_gaps`` step for an untested module; ``--tdd-implement`` surfaces a
     ``tdd_implement`` step for a missing function a RED test demands.
-  - DEFAULT BYTE-IDENTICAL: with NONE of the ten flags set the ``--actions``
+  - DEFAULT BYTE-IDENTICAL: with NONE of the eleven flags set the ``--actions``
     JSON is byte-for-byte identical to the same plan built with every objective
     inert, and is stable run-to-run (determinism preserved, idea set unshifted).
   - INDEPENDENCE (plan level): opting one objective in never surfaces another.
@@ -60,6 +61,7 @@ _FLAG_TO_DEST = {
     "--dedup-guarded-return": "dedup_guarded_return",
     "--dedup-parameterized": "dedup_parameterized",
     "--dedup-parameterized-total-return": "dedup_parameterized_total_return",
+    "--dedup-parameterized-guarded-return": "dedup_parameterized_guarded_return",
 }
 
 
@@ -154,7 +156,7 @@ def _tdd_project(tmp_path: Path) -> Path:
 # RECOGNITION: argparse accepts every flag; defaults off; independent.
 # ---------------------------------------------------------------------------
 
-def test_all_ten_flags_default_off() -> None:
+def test_all_eleven_flags_default_off() -> None:
     """A plain ``ideate --actions`` parse leaves every opt-in objective OFF."""
     parser = _build_ideate_parser()
     args = parser.parse_args(["ideate", "--actions"])
@@ -176,7 +178,7 @@ def test_each_flag_is_recognized_and_independent(flag: str, dest: str) -> None:
 
 
 def test_all_flags_together_parse() -> None:
-    """All ten flags can be combined on one invocation (no clash, all True)."""
+    """All eleven flags can be combined on one invocation (no clash, all True)."""
     parser = _build_ideate_parser()
     args = parser.parse_args(["ideate", "--actions", *_FLAG_TO_DEST])
     for dest in _FLAG_TO_DEST.values():
@@ -226,7 +228,7 @@ def test_modernize_flag_surfaces_step_in_roadmap_path(tmp_path: Path) -> None:
 
 def test_default_actions_plan_has_no_optin_objective(tmp_path: Path) -> None:
     """On a project that WOULD qualify for several objectives, a default
-    ``--actions`` plan (no opt-in flag) surfaces NONE of the ten."""
+    ``--actions`` plan (no opt-in flag) surfaces NONE of the eleven."""
     root = _idiom_project(tmp_path)
     payload = _run_ideate(root)
     for dest in _FLAG_TO_DEST.values():

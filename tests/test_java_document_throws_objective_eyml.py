@@ -738,7 +738,7 @@ def test_objective_total_is_seventy_nine():
 
     # 91 after java-document-returns completed the Java Javadoc triad (@param + @throws +
     # @return).
-    assert len(set(available_objectives())) == 97  # 96 -> 97: dedup-parameterized-total-return
+    assert len(set(available_objectives())) == 98  # 97 -> 98: dedup-parameterized-guarded-return
 
 
 # --- PARITY ROW 1: move_value tier (the doc-surface 0.66 tier) ----------------

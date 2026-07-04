@@ -45,6 +45,11 @@ RAILS (any miss records a blocker; correctness over coverage, absolutely):
 - no ``super`` / ``__class__`` reference — a module-level helper has no class
   cell, so zero-arg ``super()`` would break at runtime while still re-parsing;
 - no ``del`` — it voids the definite-assignment argument below;
+- every LIVE-IN name must ALSO be DEFINITELY bound BEFORE the run even starts
+  (a parameter, or a direct top-level prelude assignment — W99b-fix): the
+  call site evaluates every live-in name EAGERLY, so a name only
+  conditionally bound in the prelude could raise ``UnboundLocalError`` on a
+  guard path where the original never reached the read at all;
 - every live-out name must be DEFINITELY assigned when the run falls through
   (bound by a direct, top-level assignment statement of the run) — otherwise
   the helper's projection line could raise ``UnboundLocalError`` on a path
@@ -77,7 +82,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app.execution._dedup_helpers import (
+    _bound_before_run,
     _bound_names,
+    _definitely_assigned,
+    _unbound_live_in_reason,
     resolve_occurrence_prefix,
     stamp_multi_module_plan,
 )
@@ -150,34 +158,6 @@ def _guarded_return_reason(run: list) -> str | None:
     return None
 
 
-def _definitely_assigned(run: list) -> set[str]:
-    """Names DEFINITELY bound when control falls off the end of ``run``.
-
-    Reaching the fall-through exit means every DIRECT (top-level) statement of
-    the run executed to completion, so the Name targets of a direct
-    ``Assign`` / ``AugAssign`` / valued ``AnnAssign`` are guaranteed bound. A
-    name bound only inside an ``if``/loop body, a ``for`` target (zero
-    iterations skip it), a ``with`` body, or a walrus in a short-circuit
-    position may be SKIPPED on the fall-through path, so none of those count.
-    Conservative by design — under-approximating definite assignment can only
-    refuse a liftable block, never mis-lift one."""
-    out: set[str] = set()
-    for stmt in run:
-        if isinstance(stmt, ast.Assign):
-            targets = stmt.targets
-        elif isinstance(stmt, ast.AugAssign):
-            targets = [stmt.target]
-        elif isinstance(stmt, ast.AnnAssign) and stmt.value is not None:
-            targets = [stmt.target]
-        else:
-            continue
-        for target in targets:
-            for n in ast.walk(target):
-                if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
-                    out.add(n.id)
-    return out
-
-
 def _resolve_guarded_return(rel: str, start_line: int, n_statements: int,
                             sources: dict, trees: dict,
                             plan: RenamePlan) -> _Occurrence | None:
@@ -200,6 +180,19 @@ def _resolve_guarded_return(rel: str, start_line: int, n_statements: int,
     before = fn.body[:fn.body.index(run[0])]
     after = fn.body[fn.body.index(run[-1]) + 1:]
     live_in, live_out = _data_flow(fn, before, run, after)
+    bound_before = _bound_before_run(fn, before)
+
+    # W99b-fix (family-wide, shipped-bug closure): EVERY live-in name must be
+    # bound_before, full stop — the call site evaluates live_in EAGERLY
+    # (`_call_lines`), so a name only CONDITIONALLY bound in the prelude could
+    # raise `UnboundLocalError` even on a path where the guard return below
+    # exits before the run ever reads it (`acc` is live-in-only, not
+    # live-out: the pre-existing check below never saw it).
+    reason = _unbound_live_in_reason(live_in, bound_before)
+    if reason:
+        plan.blockers.append(f"{rel}:{start_line}: {reason}")
+        return None
+
     # W100 (over-refusal narrowing): a live-in name that is DEFINITELY bound
     # BEFORE the run — a parameter, or a direct top-level assignment in the
     # prelude — is always bound at the fall-through even when the run only
@@ -208,8 +201,8 @@ def _resolve_guarded_return(rel: str, start_line: int, n_statements: int,
     # enough: _data_flow's live-in admits names bound only CONDITIONALLY
     # before the run, and evaluating such a name eagerly as a call argument
     # could raise `UnboundLocalError` on a guard path where the original
-    # returned before ever reading it.
-    bound_before = _function_param_names(fn) | _definitely_assigned(before)
+    # returned before ever reading it (closed for live-in-ONLY names by the
+    # W99b-fix rail above; this rail stays for live-out names).
     definite = _definitely_assigned(run) | (set(live_in) & bound_before)
     unbound = [n for n in live_out if n not in definite]
     if unbound:
@@ -265,14 +258,23 @@ def _names_used_in_fns(resolved: list) -> set[str]:
 
 
 def _free_sentinel_name(helper_name: str, trees: dict, rels: set,
-                        resolved: list) -> str | None:
+                        resolved: list,
+                        also_avoid: frozenset = frozenset()) -> str | None:
     """A module-level sentinel name derived from the helper's own, free in
     every involved module (its def and cross-module imports must never
     collide) AND unused as any Name/arg in every enclosing function (a
     same-named local would hijack the guard's identity test — the same scan
     :func:`_free_result_name` performs) — ``_shared_1`` → ``_SHARED_1_MISS``.
-    ``None`` when exhausted."""
-    bound = _all_top_level_bindings(trees, rels) | _names_used_in_fns(resolved)
+    ``None`` when exhausted.
+
+    ``also_avoid`` (default ``frozenset()`` — byte-preserves the exact lane):
+    extra names the sentinel must dodge. The near-dup parameterized lanes pass
+    the hole `p<n>` params here — the sentinel is referenced in the helper's
+    tail where the params are in scope, so a same-named param would shadow it.
+    Unreachable today (``p\\d+`` never collides with ``_UPPER_MISS``), but
+    W99c's descriptive Name-hole names make it reachable — wired now."""
+    bound = (_all_top_level_bindings(trees, rels) | _names_used_in_fns(resolved)
+            | also_avoid)
     base = f"_{helper_name.strip('_').upper()}_MISS"
     if base not in bound:
         return base
@@ -340,12 +342,19 @@ def _build_guarded_helper(first: _Occurrence, helper_name: str, live_in: list,
     return "\n".join(src) + "\n\n\n"
 
 
-def _call_lines(indent: str, emit: _Emit) -> list[str]:
+def _call_lines(indent: str, emit: _Emit,
+                extra_args: tuple[str, ...] = ()) -> list[str]:
     """The caller-side replacement for one copy (newline-terminated lines):
     call the helper, return through anything that is NOT the fall-through
-    marker, then rebind the projected locals when there are any."""
+    marker, then rebind the projected locals when there are any.
+
+    ``extra_args`` (default ``()`` — byte-preserves the exact lane): appended
+    after ``emit.live_in`` in the call's argument list — the near-dup
+    parameterized lane's OWN per-occurrence constant literals (never a
+    live-in name, so eager evaluation is always safe)."""
     rvar, sentinel = emit.rvar, emit.sentinel
-    call = f"{indent}{rvar} = {emit.helper_name}({', '.join(emit.live_in)})\n"
+    args = list(emit.live_in) + list(extra_args)
+    call = f"{indent}{rvar} = {emit.helper_name}({', '.join(args)})\n"
     if not emit.live_out:
         return [call,
                 f"{indent}if {rvar} is not {sentinel}:\n",
@@ -360,17 +369,23 @@ def _call_lines(indent: str, emit: _Emit) -> list[str]:
 
 
 def _emit_file(rel: str, occs: list, sources: dict, trees: dict,
-               emit: _Emit) -> tuple[str | None, str]:
+               emit: _Emit,
+               const_args_of=lambda occ: ()) -> tuple[str | None, str]:
     """Rewrite ONE module: replace each copy with the sentinel-guard call block
     (bottom-up so earlier spans stay valid), then either splice the sentinel +
     helper in (the defining file) or import BOTH names (any other file).
     Returns ``(new_source, "")`` or ``(None, blocker)`` if the emitted module
-    would not parse."""
+    would not parse.
+
+    ``const_args_of`` (default a no-op lambda — byte-preserves the exact
+    lane): per-occurrence callback returning that copy's OWN extra call
+    arguments (the near-dup lane's per-column constant literals)."""
     lines = list(sources[rel].splitlines(keepends=True))
     for occ in sorted(occs, key=lambda o: o.span_lo, reverse=True):
         head = occ.lines[occ.span_lo - 1]
         indent = " " * (len(head) - len(head.lstrip()))
-        lines[occ.span_lo - 1:occ.span_hi] = _call_lines(indent, emit)
+        lines[occ.span_lo - 1:occ.span_hi] = _call_lines(
+            indent, emit, const_args_of(occ))
 
     if rel == emit.first_rel:
         insert_at = _helper_insert_index(emit.first_container, occs,
@@ -393,10 +408,14 @@ def _emit_file(rel: str, occs: list, sources: dict, trees: dict,
 
 
 def _emit_all_files(resolved: list, sources: dict, trees: dict, emit: _Emit,
-                    plan: RenamePlan) -> tuple[dict, dict] | None:
+                    plan: RenamePlan,
+                    const_args_of=lambda occ: ()) -> tuple[dict, dict] | None:
     """Group occurrences by file and rewrite each (deterministic sorted order),
     accumulating ``(new_contents, edits_by_file)``. ``None`` (after recording a
-    blocker) if any emitted module would not parse."""
+    blocker) if any emitted module would not parse.
+
+    ``const_args_of`` (default a no-op lambda — byte-preserves the exact
+    lane): threaded straight through to :func:`_emit_file`."""
     by_file: dict[str, list] = {}
     for occ in resolved:
         by_file.setdefault(occ.rel, []).append(occ)
@@ -405,7 +424,8 @@ def _emit_all_files(resolved: list, sources: dict, trees: dict, emit: _Emit,
     edits: dict[str, int] = {}
     for rel in sorted(by_file):
         occs = sorted(by_file[rel], key=lambda o: o.span_lo)
-        new_source, emit_blocker = _emit_file(rel, occs, sources, trees, emit)
+        new_source, emit_blocker = _emit_file(rel, occs, sources, trees, emit,
+                                              const_args_of)
         if new_source is None:
             plan.blockers.append(emit_blocker)
             return None

@@ -350,7 +350,8 @@ def _auto_memory_line(target) -> list[str]:
 # during grounding) stay behind `--deep` so cost is opt-in and disclosed.
 _AUTO_CHEAP_SYNTHESIS = ("modernize", "dedup_total_return",
                          "dedup_guarded_return", "dedup_parameterized",
-                         "dedup_parameterized_total_return")
+                         "dedup_parameterized_total_return",
+                         "dedup_parameterized_guarded_return")
 _AUTO_DEEP_SYNTHESIS = ("cover_gaps", "tdd_implement", "strengthen_tests",
                         "wire_exports", "generate_usage_doc")
 

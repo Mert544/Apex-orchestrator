@@ -699,6 +699,27 @@ def _param_seed_names(first: _Occurrence, live_in, live_out) -> list[str]:
     return sorted(names)
 
 
+def _hole_params(resolved, per_occ_leaves, diff_cols, first, live_in,
+                 live_out) -> list[str]:
+    """Deterministic param names for the diff-column holes: a descriptive name
+    from a common NAME affix token where every occurrence's leaf agrees, else
+    the neutral ``p<n>`` fallback. Never collide with each other, live_in,
+    live_out, or any name the FIRST occurrence's own statements already
+    reference or bind (the H-B closure, :func:`_param_seed_names`).
+
+    Extracted (W99b, share-in-place) from :func:`_build_helper_block` so the
+    guarded-return near-dup lane's OWN helper builder can call it too instead
+    of re-deriving ``diff_node_segments`` — the near-dup family's own near-dup
+    of itself, avoided."""
+    diff_node_segments = [
+        [(per_occ_leaves[i][col][1], _segment(occ.source, per_occ_leaves[i][col][1]))
+         for i, occ in enumerate(resolved)]
+        for col in diff_cols
+    ]
+    return _hole_param_names(
+        diff_node_segments, _param_seed_names(first, live_in, live_out))
+
+
 def _build_helper_block(resolved, trees, rels, first, per_occ_leaves,
                         diff_cols, live_in, live_out, plan: RenamePlan):
     """Choose the helper name and param names, splice the first occurrence's
@@ -718,13 +739,8 @@ def _build_helper_block(resolved, trees, rels, first, per_occ_leaves,
     # token where every occurrence's leaf agrees, else the neutral `p<n>` fallback.
     # Never collide with each other, live_in, live_out, or any name the FIRST
     # occurrence's own statements already reference or bind (H-B closure).
-    diff_node_segments = [
-        [(per_occ_leaves[i][col][1], _segment(occ.source, per_occ_leaves[i][col][1]))
-         for i, occ in enumerate(resolved)]
-        for col in diff_cols
-    ]
-    param_names = _hole_param_names(
-        diff_node_segments, _param_seed_names(first, live_in, live_out))
+    param_names = _hole_params(resolved, per_occ_leaves, diff_cols, first,
+                               live_in, live_out)
 
     # ── Splice the FIRST occurrence's source: replace each differing constant
     # with its parameter name, located by source span (structural, not textual).
@@ -742,6 +758,59 @@ def _build_helper_block(resolved, trees, rels, first, per_occ_leaves,
     helper_src = [f"def {helper_name}({', '.join(sig_params)}):"] + body_lines
     helper_block = "\n".join(helper_src) + "\n\n\n"
     return helper_name, helper_block
+
+
+def _match_parameterized(root: Path, group, plan: RenamePlan, *, resolver):
+    """The MATCHER half of the shared parameterized-dedup pipeline (W99b
+    share-in-place split): validate the group's shape, parse the occurrence
+    locations, read every involved module, resolve every occurrence via
+    ``resolver`` (running the family's full soundness-rail inventory + the
+    signature/tail-return-uniformity gates), locate the differing columns
+    (re-deriving near_dup's own structural template and gating drift), and
+    require every differing hole to be a plain Constant. Returns
+    ``(sources, trees, rels, resolved, live_in, live_out, tail_return,
+    per_occ_leaves, diff_cols)`` or ``None`` (recording a blocker) on the
+    slightest doubt.
+
+    Extracted from :func:`_plan_parameterized` so a THIRD lane (the
+    guarded-return near-dup lander) can run the identical matcher and plug in
+    its OWN emit (sentinel projection) instead of the single-call-line one
+    below — an emit-strategy hook would need to carry the guarded lane's three
+    extra pre-emit name rails (shadow/sentinel/rvar) as callback fields, so the
+    family's own precedent (dedup_total_return's shared prelude +
+    per-lane emit) is followed instead. Output is byte-identical to the
+    pre-split inline code — pinned by the existing near-dup suites."""
+    shape = _validate_group_shape(group, plan)
+    if shape is None:
+        return None
+    occurrences, n_statements, diff_count, differences = shape
+
+    parsed = [_parse_occurrence(o) for o in occurrences]
+    if any(p is None for p in parsed):
+        plan.blockers.append("malformed occurrence location(s)")
+        return None
+
+    read = _read_modules(root, parsed, plan)
+    if read is None:
+        return None
+    sources, trees, rels = read
+
+    occ_result = _resolve_all_occurrences(root, parsed, n_statements, sources,
+                                          trees, plan, resolver=resolver)
+    if occ_result is None:
+        return None
+    resolved, live_in, live_out, tail_return = occ_result
+
+    located = _locate_diff_columns(resolved, diff_count, differences, plan)
+    if located is None:
+        return None
+    per_occ_leaves, diff_cols = located
+
+    if not _gate_value_holes(resolved, per_occ_leaves, diff_cols, plan):
+        return None
+
+    return (sources, trees, rels, resolved, live_in, live_out, tail_return,
+            per_occ_leaves, diff_cols)
 
 
 def _plan_parameterized(project_root: str | Path, group, *, resolver,
@@ -764,34 +833,11 @@ def _plan_parameterized(project_root: str | Path, group, *, resolver,
     plan = RenamePlan(old=plan_label, new="_shared")
     root = Path(project_root)
 
-    shape = _validate_group_shape(group, plan)
-    if shape is None:
+    matched = _match_parameterized(root, group, plan, resolver=resolver)
+    if matched is None:
         return plan
-    occurrences, n_statements, diff_count, differences = shape
-
-    parsed = [_parse_occurrence(o) for o in occurrences]
-    if any(p is None for p in parsed):
-        plan.blockers.append("malformed occurrence location(s)")
-        return plan
-
-    read = _read_modules(root, parsed, plan)
-    if read is None:
-        return plan
-    sources, trees, rels = read
-
-    occ_result = _resolve_all_occurrences(root, parsed, n_statements, sources,
-                                          trees, plan, resolver=resolver)
-    if occ_result is None:
-        return plan
-    resolved, live_in, live_out, tail_return = occ_result
-
-    located = _locate_diff_columns(resolved, diff_count, differences, plan)
-    if located is None:
-        return plan
-    per_occ_leaves, diff_cols = located
-
-    if not _gate_value_holes(resolved, per_occ_leaves, diff_cols, plan):
-        return plan
+    (sources, trees, rels, resolved, live_in, live_out, tail_return,
+     per_occ_leaves, diff_cols) = matched
 
     first = resolved[0]
     first_dotted = _module_dotted(first.rel)

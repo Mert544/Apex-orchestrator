@@ -268,7 +268,7 @@ def _ideate_kind_view(args, report, target, kind: str) -> None:
             print(f"- `{i.branch_path}` [{i.operator}] {i.title}  (v {i.value}){caveat}")
 
 
-# The ten grounded opt-in synthesis objectives the bridge augments the
+# The eleven grounded opt-in synthesis objectives the bridge augments the
 # action plan with, mapped CLI-flag-attr -> plan_tree/plan_roadmap keyword. Each
 # is default OFF (so a plain --actions plan is byte-identical) and INDEPENDENT;
 # they augment the plan only when --actions is set. Single source of truth shared
@@ -284,11 +284,12 @@ _OPTIN_SYNTHESIS_FLAGS = (
     "dedup_guarded_return",
     "dedup_parameterized",
     "dedup_parameterized_total_return",
+    "dedup_parameterized_guarded_return",
 )
 
 
 def _optin_synthesis_kwargs(args) -> dict[str, bool]:
-    """Collect the ten opt-in synthesis flags as ``{keyword: bool}``.
+    """Collect the eleven opt-in synthesis flags as ``{keyword: bool}``.
 
     Read DEFENSIVELY via ``getattr(..., False)`` so a Namespace that predates
     these flags (e.g. a test fake) simply sees every objective OFF — preserving
@@ -315,7 +316,7 @@ def _ideate_action_plan(args, report, target):
     # steps so render_action_markdown emits a visible "proof:" line. Bounded
     # top-K in the bridge; recommend-only (no writes, no test runs).
     _prove = getattr(args, "prove", False)
-    # The ten opt-in synthesis objectives (default off, independent). Inert
+    # The eleven opt-in synthesis objectives (default off, independent). Inert
     # unless --actions augments the plan; threaded into BOTH plan paths.
     _synthesis = _optin_synthesis_kwargs(args)
     # --auto (default off): autonomously enable EVERY opt-in objective at once,
@@ -540,7 +541,7 @@ def register_parsers(subparsers) -> None:
         help="With --actions: attach proof lines (exact diff stat + re-parse "
         "verdict + impact) to the top runnable steps (recommend-only, never applied)",
     )
-    # The ten grounded opt-in synthesis objectives the bridge can augment a
+    # The eleven grounded opt-in synthesis objectives the bridge can augment a
     # --actions plan with (the develop-grade work `apex plan --concrete` already
     # LANDS). Each is default OFF so a plain --actions plan is byte-identical, and
     # INDEPENDENT (one never pulls in another). They are meaningful ONLY with
@@ -616,6 +617,15 @@ def register_parsers(subparsers) -> None:
         help="Opt-in (with --actions): parameterize an ALWAYS-RETURNING "
         "near-duplicate group into one shared returning helper (differing "
         "constants become parameters)",
+    )
+    ideate_parser.add_argument(
+        "--dedup-parameterized-guarded-return",
+        action="store_true",
+        dest="dedup_parameterized_guarded_return",
+        help="Opt-in (with --actions): parameterize a GUARD-RETURN "
+        "near-duplicate group (a guard return plus a live fall-through) into "
+        "one shared sentinel-projecting helper (differing constants become "
+        "parameters)",
     )
     ideate_parser.add_argument(
         "--auto",

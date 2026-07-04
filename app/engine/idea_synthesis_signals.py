@@ -132,6 +132,21 @@ Four signals, one per synthesis objective Apex offers:
     group, yields nothing — exactly the modules ``apex develop``'s
     dedup-parameterized-total-return objective would rewrite, never an
     over-promise.
+  - :func:`dedup_parameterized_guarded_return_modules` — dedup-parameterized-
+    guarded-return, the near-dup family's THIRD control-flow rung (the same
+    CROSS-MODULE shape as its two siblings above, for the GUARD-RETURN
+    complement: a guard ``return`` on some path AND a live fall-through). It
+    DELEGATES wholesale to the objective's OWN gate
+    :func:`app.execution.objectives.dedup_parameterized_guarded_return
+    ._actionable_groups` (which pairs the SAME near-duplicate detector with the
+    real :func:`app.execution.near_dup_guarded_return
+    .plan_near_dup_guarded_return` and keeps only a guard-return group whose
+    plan produces a non-empty ``new_contents``), then keeps a module precisely
+    when it PARTICIPATES in one of those actionable groups. So a project with
+    no parameterizable guard-return near-duplicate, or a module that touches no
+    actionable group, yields nothing — exactly the modules ``apex develop``'s
+    dedup-parameterized-guarded-return objective would rewrite, never an
+    over-promise.
 
 Pure: no writes, no pytest, no network. Deterministic: every result is sorted.
 Defensive: a missing / unreadable / syntactically-broken module, or a
@@ -170,6 +185,7 @@ __all__ = [
     "dedup_guarded_return_modules",
     "dedup_parameterizable_modules",
     "dedup_parameterized_total_return_modules",
+    "dedup_parameterized_guarded_return_modules",
 ]
 
 
@@ -678,6 +694,37 @@ def dedup_parameterized_total_return_modules(
     objective's gate, never re-derived); ``modules`` may freely mix paths the
     objective never touches, each simply absent from the participating set."""
     from app.execution.objectives.dedup_parameterized_total_return import (
+        _actionable_groups,
+    )
+
+    touched = _modules_in_actionable_units(root, _actionable_groups)
+    return _qualifying(root, modules, lambda _rp, rel: rel in touched, limit)
+
+
+def dedup_parameterized_guarded_return_modules(
+    root: str | Path, modules: Iterable[str], limit: int | None = None
+) -> list[str]:
+    """The modules participating in a LANDABLE dedup-parameterized-guarded-
+    return lift, sorted, capped.
+
+    Grounded on the objective's OWN gate
+    :func:`app.execution.objectives.dedup_parameterized_guarded_return
+    ._actionable_groups` — which pairs the SAME (memoized) near-duplicate
+    detector with the real :func:`app.execution.near_dup_guarded_return
+    .plan_near_dup_guarded_return` and keeps only a GUARD-RETURN (a guard
+    ``return`` on some path AND a live fall-through), Constant-only,
+    signature-clean group whose plan produces a non-empty ``new_contents``. A
+    module qualifies only when it PARTICIPATES in one of those actionable
+    groups (its rel-path is the module half of a group occurrence), so a
+    project with no parameterizable guard-return near-duplicate, or a module
+    touching no actionable group, does not qualify — exactly the modules
+    ``apex develop``'s dedup-parameterized-guarded-return objective would
+    rewrite, never an over-promise.
+
+    The expensive (memoized) detector runs ONCE (membership is delegated to the
+    objective's gate, never re-derived); ``modules`` may freely mix paths the
+    objective never touches, each simply absent from the participating set."""
+    from app.execution.objectives.dedup_parameterized_guarded_return import (
         _actionable_groups,
     )
 

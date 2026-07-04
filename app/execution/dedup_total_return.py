@@ -46,6 +46,8 @@ import ast
 from pathlib import Path
 
 from app.execution._dedup_helpers import (
+    _bound_before_run,
+    _unbound_live_in_reason,
     family_rail_blocker,
     resolve_occurrence_prefix,
     stamp_multi_module_plan,
@@ -154,15 +156,17 @@ def _total_return_reason(run: list) -> str | None:
 
 
 def _total_return_occurrence(rel: str, source: str, fn, container,
-                             run: list) -> _Occurrence:
-    """Build the :class:`_Occurrence` for an ADMITTED total-return ``run``:
-    live_in from the standard before/after data flow, live_out hardcoded
-    ``[]`` (the block unconditionally returns, so any fn-body statement after
-    it is unreachable — nothing flows out, the helper returns the value
-    directly), and ``tail_return=True`` (the call site becomes ``return
-    helper(...)``). Shared by this module's own resolver
-    (:func:`_resolve_total_return`) and the near-dup sibling's
-    (:func:`app.execution.near_dup_total_return
+                             run: list, plan: RenamePlan) -> _Occurrence | None:
+    """Build the :class:`_Occurrence` for an ADMITTED total-return ``run``, or
+    ``None`` (recording a blocker) when a live-in name is not definitely bound
+    before the run even starts (W99b-fix, family-wide — see
+    ``_dedup_helpers._unbound_live_in_reason``): live_in from the standard
+    before/after data flow, live_out hardcoded ``[]`` (the block
+    unconditionally returns, so any fn-body statement after it is unreachable
+    — nothing flows out, the helper returns the value directly), and
+    ``tail_return=True`` (the call site becomes ``return helper(...)``).
+    Shared by this module's own resolver (:func:`_resolve_total_return`) and
+    the near-dup sibling's (:func:`app.execution.near_dup_total_return
     ._resolve_parameterized_total_return`) — the ONE place both admissibility
     checks converge once a run is accepted, so the two never duplicate this
     tail (a near-dup group of themselves, previously)."""
@@ -170,6 +174,14 @@ def _total_return_occurrence(rel: str, source: str, fn, container,
     after = fn.body[fn.body.index(run[-1]) + 1:]
     live_in, _live_out = _data_flow(fn, before, run, after)
     live_out: list[str] = []
+
+    # W99b-fix: the block ALWAYS returns, so an eager call-argument read of a
+    # conditionally-pre-bound live-in name can raise UnboundLocalError on a
+    # path where the original's own guard returned before ever reaching it.
+    reason = _unbound_live_in_reason(live_in, _bound_before_run(fn, before))
+    if reason:
+        plan.blockers.append(f"{rel}:{run[0].lineno}: {reason}")
+        return None
 
     span_lo = run[0].lineno
     span_hi = max(getattr(s, "end_lineno", s.lineno) for s in run)
@@ -197,7 +209,7 @@ def _resolve_total_return(rel: str, start_line: int, n_statements: int,
         plan.blockers.append(f"{rel}:{start_line}: {reason}")
         return None
 
-    return _total_return_occurrence(rel, source, fn, container, run)
+    return _total_return_occurrence(rel, source, fn, container, run, plan)
 
 
 def _validate_block(block, plan: RenamePlan) -> tuple[list, int] | None:

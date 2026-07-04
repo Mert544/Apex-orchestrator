@@ -731,7 +731,12 @@ def test_live_in_only_conditionally_bound_before_is_still_blocked(tmp_path):
     # Accepting it would evaluate `acc` eagerly as a call argument, raising
     # UnboundLocalError on ga(False, ...) where the ORIGINAL returns None
     # from the guard before ever reading it. live_in membership alone must
-    # not lift the refusal.
+    # not lift the refusal. NOTE (W99b-fix): `acc` here is ALSO live-out
+    # (`acc = acc + 1` is read again in `return acc + total`, outside the
+    # run), so this refusal is driven by the PRE-EXISTING live-out rail below
+    # — it is the negative control proving that rail is untouched. The
+    # genuinely NEW gap (live-in ONLY, never live-out) is pinned separately
+    # by ``test_live_in_only_not_live_out_conditionally_bound_is_blocked``.
     _write(tmp_path, "mod.py", _COND_BEFORE_LIVE_IN)
     block = DuplicateBlock(fingerprint="x", lines=3,
                            occurrences=["mod.py:4", "mod.py:15"])
@@ -739,6 +744,62 @@ def test_live_in_only_conditionally_bound_before_is_still_blocked(tmp_path):
     assert not plan.ok
     assert any("acc" in b and "unbound" in b for b in plan.blockers)
     assert not plan.new_contents
+
+
+_COND_BEFORE_LIVE_IN_ONLY = '''\
+def ga(cond, flag, log):
+    if cond:
+        acc = 1
+    if not cond:
+        return None
+    if flag:
+        log.append(acc)
+    total = 7
+    log.append(total)
+
+
+def gb(cond, flag, log):
+    if cond:
+        acc = len(log)
+    if not cond:
+        return None
+    if flag:
+        log.append(acc)
+    total = 7
+    log.append(total)
+'''
+
+
+def test_live_in_only_not_live_out_conditionally_bound_is_blocked(tmp_path):
+    # W99b-fix: the SHIPPED gap an independent soundness skeptic
+    # machine-verified (probe: a guard-return run whose live_in contains a
+    # name bound only under `if` in the PRELUDE, read only conditionally
+    # after the guard, with live_out == [] so `acc` is live-in ONLY — never
+    # live-out). The PRE-EXISTING W100 rail (the block above) only widens
+    # `definite` for names ALSO in live_out and only ever REFUSES on
+    # live-out membership — it never checked a live-in-only name at all, so
+    # this exact shape sailed through with ZERO blockers: the emitted call
+    # `_res = _shared_1(acc, cond, flag, log)` reads `acc` EAGERLY.
+    # ga(False, False, []) originally returns None (the guard exits before
+    # `if flag:` is ever reached), but the accepted lift raised
+    # UnboundLocalError instead. The new family-wide rail
+    # (`_dedup_helpers._unbound_live_in_reason`, wired in ahead of the W100
+    # live-out check) closes it for every live-in name, not just live-out.
+    _write(tmp_path, "mod.py", _COND_BEFORE_LIVE_IN_ONLY)
+    block = DuplicateBlock(fingerprint="x", lines=4,
+                           occurrences=["mod.py:4", "mod.py:15"])
+    plan = plan_dedup_guarded_return(tmp_path, block)
+    assert not plan.ok
+    assert any("acc" in b and "unbound" in b for b in plan.blockers)
+    assert not plan.new_contents
+
+    # Confirm the fixture really is the guard-return shape (not routed to a
+    # sibling) and that `acc` is genuinely live-in-only: exec the ORIGINAL to
+    # show the guard path never touches `acc` at all.
+    before = _exec_module(_COND_BEFORE_LIVE_IN_ONLY)
+    log: list = []
+    assert before["ga"](False, False, log) is None
+    assert log == []
 
 
 _SIG_DIVERGE = '''\

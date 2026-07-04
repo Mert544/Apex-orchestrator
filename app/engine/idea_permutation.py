@@ -459,6 +459,7 @@ class IdeaPermutationEngine:
         "dedup_guarded_return_modules": "dedup_guarded_return",
         "dedup_parameterizable_modules": "dedup_parameterized",
         "dedup_parameterized_total_return_modules": "dedup_parameterized_total_return",
+        "dedup_parameterized_guarded_return_modules": "dedup_parameterized_guarded_return",
     }
     _LANDABLE_DEEP_SIGNAL_OPERATORS: dict[str, str] = {
         "cover_gaps_modules": "cover_gaps",

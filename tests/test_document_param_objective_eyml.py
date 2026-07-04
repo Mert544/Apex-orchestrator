@@ -678,7 +678,7 @@ def test_counts_are_forty_one_concrete_of_eighty_three():
     from app.engine.objective_compiler import available_objectives
 
     names = set(available_objectives())
-    assert len(names) == 97  # 96 -> 97: dedup-parameterized-total-return
+    assert len(names) == 98  # 97 -> 98: dedup-parameterized-guarded-return
     assert len(classify_objectives(names)["CONCRETE"]) == 50  # finalize-module-constant (50th CONCRETE)
 
 

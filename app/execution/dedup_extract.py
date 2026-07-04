@@ -37,6 +37,8 @@ import keyword
 from pathlib import Path
 
 from app.execution._dedup_helpers import (
+    _bound_before_run,
+    _unbound_live_in_reason,
     family_rail_blocker,
     resolve_occurrence_prefix,
     stamp_multi_module_plan,
@@ -155,7 +157,9 @@ def _resolve_occurrence(root: Path, rel: str, start_line: int,
                         n_statements: int, sources: dict, trees: dict,
                         plan: RenamePlan) -> _Occurrence | None:
     """Resolve one ``module:lineno`` occurrence into an :class:`_Occurrence`,
-    recording a blocker and returning ``None`` on any unsafe / ambiguous case."""
+    recording a blocker and returning ``None`` on any unsafe / ambiguous case
+    — including a live-in name that is not definitely bound before the run
+    even starts (W99b-fix; see ``_dedup_helpers._unbound_live_in_reason``)."""
     prefix = resolve_occurrence_prefix(plan, rel, start_line, n_statements,
                                        sources, trees, _locate_run)
     if prefix is None:
@@ -170,6 +174,18 @@ def _resolve_occurrence(root: Path, rel: str, start_line: int,
     before = fn.body[:fn.body.index(run[0])]
     after = fn.body[fn.body.index(run[-1]) + 1:]
     live_in, live_out = _data_flow(fn, before, run, after)
+
+    # W99b-fix (family-wide, shipped-bug closure): a live-in name only
+    # CONDITIONALLY bound before the run would be evaluated EAGERLY as a call
+    # argument once the run collapses into a helper call — even on a path
+    # where the original never actually read it (a conditional read inside
+    # the run, or — for the total-return/guarded-return siblings — a guard
+    # that exits before the read is ever reached).
+    reason = _unbound_live_in_reason(live_in, _bound_before_run(fn, before))
+    if reason:
+        plan.blockers.append(f"{rel}:{start_line}: {reason}")
+        return None
+
     if tail_return:
         # The block unconditionally returns, so any fn-body statement after it is
         # unreachable — nothing flows out. The helper returns the value directly.

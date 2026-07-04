@@ -781,7 +781,7 @@ def test_objective_total_is_seventy_eight():
     # 87 after js-document-returns-inferred (the PLAIN-JS inferred-@returns JSDoc
     # objective) self-registered; this count pin is the tripwire each new objective
     # round bumps.
-    assert len(set(available_objectives())) == 97  # 96 -> 97: dedup-parameterized-total-return
+    assert len(set(available_objectives())) == 98  # 97 -> 98: dedup-parameterized-guarded-return
 
 
 def test_objective_spec_is_callable():

@@ -97,29 +97,30 @@ def test_compile_objective_can_run_it(tmp_path):
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# The MANDATORY five-member non-contention matrix: each fixture scores
+# The MANDATORY six-member non-contention matrix: each fixture scores
 # actionable on EXACTLY ONE of {dedup, dedup-total-return, dedup-guarded-
-# return, dedup-parameterized, dedup-parameterized-total-return} and is
-# refused by the other four — the dedup family's admissibility shapes are
-# disjoint complements by construction, so the five never contend for the
-# same block/group.
+# return, dedup-parameterized, dedup-parameterized-total-return,
+# dedup-parameterized-guarded-return} and is refused by the other five — the
+# dedup family's admissibility shapes are disjoint complements by
+# construction, so the six never contend for the same block/group.
 #
 # "dedup" (base) uses an ACTIONABLE-filtered proxy (does ``plan_dedup_extract``
 # actually land a rewrite on the SAME detected block?) rather than the raw
 # ``duplication_fitness`` scalar: that scalar counts every block the DETECTOR
 # finds, including total-return/guarded-return-shaped ones dedup_extract
-# itself refuses, so it is not actionable-filtered like its four self-
+# itself refuses, so it is not actionable-filtered like its five self-
 # registered siblings and would show false "contention" on shapes it can
 # never actually touch — the matrix compares what each objective would
 # REALLY land, not a raw detector count.
 # ══════════════════════════════════════════════════════════════════════════
 
-_ALL_FIVE = ("dedup", "dedup-total-return", "dedup-guarded-return",
-            "dedup-parameterized", "dedup-parameterized-total-return")
+_ALL_SIX = ("dedup", "dedup-total-return", "dedup-guarded-return",
+           "dedup-parameterized", "dedup-parameterized-total-return",
+           "dedup-parameterized-guarded-return")
 
 
 def _actionable_counts(root: Path) -> dict[str, float]:
-    """``{objective: actionable_count}`` for all five dedup-family objectives
+    """``{objective: actionable_count}`` for all six dedup-family objectives
     on ``root`` — each computed by calling the REAL lander (never a proxy),
     so "actionable" means "this objective's own transform would land a
     rewrite here", the honest definition non-contention needs."""
@@ -130,6 +131,9 @@ def _actionable_counts(root: Path) -> dict[str, float]:
     )
     from app.execution.objectives.dedup_parameterized import (
         fitness as parameterized_fitness,
+    )
+    from app.execution.objectives.dedup_parameterized_guarded_return import (
+        fitness as parameterized_guarded_return_fitness,
     )
     from app.execution.objectives.dedup_parameterized_total_return import (
         fitness as parameterized_total_return_fitness,
@@ -148,12 +152,14 @@ def _actionable_counts(root: Path) -> dict[str, float]:
         "dedup-parameterized": parameterized_fitness(str(root)),
         "dedup-parameterized-total-return":
             parameterized_total_return_fitness(str(root)),
+        "dedup-parameterized-guarded-return":
+            parameterized_guarded_return_fitness(str(root)),
     }
 
 
 def _assert_exactly_one_actionable(root: Path, expect: str) -> None:
     counts = _actionable_counts(root)
-    for name in _ALL_FIVE:
+    for name in _ALL_SIX:
         if name == expect:
             assert counts[name] >= 1.0, f"{expect} fixture: {name} = {counts}"
         else:
@@ -256,6 +262,41 @@ def beta(n):
     return d
 '''
 
+# 5. dedup-parameterized-guarded-return: near-dup, guard return + LIVE
+# fall-through, one CONSTANT diff INSIDE the run. The post-run tail is made
+# structurally DIVERGENT across copies (build_b appends one extra
+# ``log.append("done")`` build_a lacks) — the SAME trick _MATRIX_GUARDED's
+# comment documents with Name markers, adapted for structure: any window that
+# would extend past the run into the tail hits a DIFFERENT statement shape at
+# that position (a bare ``return label`` in build_a vs an extra ``log.append``
+# in build_b), so no shifted "ends in a differing return" window can ever
+# form there — probe-verified: only this objective scores actionable, and the
+# always-returning window the family's contention discovery warns about
+# never groups at all (not merely refused).
+_MATRIX_PARAMETERIZED_GUARDED = '''\
+def build_a(data, key, log):
+    item = data.get(key)
+    if item is None:
+        return "missing"
+    name = item["name"]
+    size = item["size"] * 2
+    label = f"{name}:{size}"
+    log.append(label)
+    return label
+
+
+def build_b(data, key, log):
+    item = data.get(key)
+    if item is None:
+        return "missing"
+    name = item["name"]
+    size = item["size"] * 3
+    label = f"{name}:{size}"
+    log.append(label)
+    log.append("done")
+    return label
+'''
+
 
 def _write_single(tmp_path: Path, src: str) -> Path:
     (tmp_path / "m.py").write_text(src, encoding="utf-8")
@@ -291,3 +332,15 @@ def test_matrix_early_return_near_dup_is_the_only_actionable_objective(tmp_path)
     # detector requires byte-identical copies, and this group differs).
     _write_single(tmp_path, _EARLY_RETURN)
     _assert_exactly_one_actionable(tmp_path, "dedup-parameterized-total-return")
+
+
+def test_matrix_parameterized_guarded_return_is_the_only_actionable_objective(tmp_path):
+    # The 6th matrix row (W99b): a guard-return near-dup with ONE constant
+    # diff inside the run and a structurally-divergent tail — lands ONLY on
+    # dedup-parameterized-guarded-return. Both its own siblings refuse it
+    # (dedup-parameterized: an early, non-tail return; dedup-parameterized-
+    # total-return: the run does not always-return), and the three EXACT-dup
+    # siblings never see it (the near-dup detector requires >=1 differing
+    # leaf; the exact detector requires byte-identical copies).
+    _write_single(tmp_path, _MATRIX_PARAMETERIZED_GUARDED)
+    _assert_exactly_one_actionable(tmp_path, "dedup-parameterized-guarded-return")
