@@ -15,7 +15,12 @@ Conservative by design — any ambiguity is a **blocker**, never a guess:
     block (moving them out would change the function's control flow);
   - a nested ``def`` / ``lambda`` in the range blocks (its scope can't be
     analyzed by this pass);
-  - the helper name must be free at module level.
+  - the helper name must be free at module level;
+  - a caller-supplied :func:`seam_fingerprint` that no longer matches the
+    statements actually sitting at the requested lines blocks — the file
+    drifted since the seam was chosen, so ``plan_extract`` refuses rather than
+    silently splicing whatever now occupies that line range (see
+    ``plan_extract``'s ``expected_fingerprint`` parameter).
 
 Apply is suite-verified with automatic rollback — exactly like every Apex
 change, so even a data-flow corner case can never ship a broken extraction.
@@ -29,7 +34,7 @@ from pathlib import Path
 
 from app.execution.cross_file_rename import RenamePlan, _top_level_bindings
 
-__all__ = ["plan_extract", "suggest_extractions"]
+__all__ = ["plan_extract", "suggest_extractions", "seam_fingerprint"]
 
 # Statements whose presence in the range would change control-flow semantics if
 # relocated into a helper (or that this pass deliberately doesn't analyze).
@@ -324,6 +329,38 @@ def _locate_statements(tree: ast.Module, start_line: int, end_line: int):
     return fn, container, stmts, None
 
 
+def _stmt_run_fingerprint(stmts: list) -> str:
+    """A normalized, position-free structural fingerprint of a statement run:
+    each statement's ``ast.dump()`` (which omits ``lineno``/``col_offset``, so
+    a pure line-shift never changes it) joined by a separator that cannot
+    appear inside one. Mirrors :func:`app.execution._dedup_helpers.
+    _identity_blocker`'s identity check — that rail compares several
+    occurrences resolved in the SAME call; this compares ONE run across TIME
+    (a plan-time snapshot vs. whatever ``plan_extract`` locates at apply
+    time)."""
+    return "\x1e".join(ast.dump(s) for s in stmts)
+
+
+def seam_fingerprint(tree: ast.Module, start_line: int, end_line: int) -> str | None:
+    """The structural fingerprint :func:`plan_extract` would compute for the
+    statement run at ``(start_line, end_line)`` in ``tree`` right now, or
+    ``None`` when the range doesn't resolve to one (nothing to fingerprint —
+    the caller has nothing sound to compare against either).
+
+    A caller that captures a seam's line numbers well before the actual apply
+    — e.g. the objective compiler's ``Move.build_plan`` closures, built from a
+    scan against the tree at the TOP of a pass but only invoked once earlier
+    moves in the SAME pass have already run and possibly edited the file —
+    calls this once at scan time and hands the result to :func:`plan_extract`
+    as ``expected_fingerprint``: an apply-time re-verification that the
+    statements now at those lines are still the ones the plan was built
+    against, not whatever the file drifted to in between."""
+    _fn, _container, stmts, blocker = _locate_statements(tree, start_line, end_line)
+    if blocker is not None:
+        return None
+    return _stmt_run_fingerprint(stmts)
+
+
 def _build_helper_block(range_lines: list[str], base_indent: int,
                         helper_name: str, live_in: list[str],
                         live_out: list[str]) -> str:
@@ -358,8 +395,21 @@ def _assemble_source(lines: list[str], span_lo: int, span_hi: int,
 
 
 def plan_extract(project_root: str | Path, file_rel: str,
-                 start_line: int, end_line: int, helper_name: str) -> RenamePlan:
-    """Build the single-file extract-method plan for ``file_rel``."""
+                 start_line: int, end_line: int, helper_name: str,
+                 expected_fingerprint: str | None = None) -> RenamePlan:
+    """Build the single-file extract-method plan for ``file_rel``.
+
+    ``expected_fingerprint`` (optional, default ``None`` ⇒ unchanged behaviour)
+    is a :func:`seam_fingerprint` captured against an EARLIER read of the tree —
+    typically at seam-suggestion time, before other moves in the same campaign
+    pass had a chance to edit ``file_rel``. When supplied, the statements
+    actually located at ``(start_line, end_line)`` right now are re-fingerprinted
+    and compared: a mismatch means the file drifted since the seam was chosen,
+    so the plan is REFUSED with a ``stale seam`` blocker instead of silently
+    extracting whatever now occupies that line range — line numbers alone are
+    not a safe anchor across time. Every caller that omits the argument (the
+    ``apex extract`` CLI's human-typed line numbers, direct tests) is
+    byte-identical to before this parameter existed."""
     plan = RenamePlan(old=f"{file_rel}:{start_line}-{end_line}", new=helper_name)
     path = Path(project_root) / file_rel
 
@@ -372,6 +422,13 @@ def plan_extract(project_root: str | Path, file_rel: str,
     fn, container, stmts, blocker = _locate_statements(tree, start_line, end_line)
     if blocker is not None:
         plan.blockers.append(blocker)
+        return plan
+    if (expected_fingerprint is not None
+            and _stmt_run_fingerprint(stmts) != expected_fingerprint):
+        plan.blockers.append(
+            f"stale seam: {file_rel}:{start_line}-{end_line} no longer holds "
+            "the statements this plan was built against — the file changed "
+            "since the seam was chosen; replan before applying")
         return plan
     if _has_blocking_control(stmts, plan):
         return plan

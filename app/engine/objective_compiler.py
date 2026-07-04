@@ -352,18 +352,34 @@ def long_function_fitness(project_root: str | Path) -> float:
 
 
 def _extract_moves(project_root: str | Path) -> list[Move]:
-    """One extract move per long function with a clean seam in the current tree."""
-    from app.execution.extract_method import plan_extract
+    """One extract move per long function with a clean seam in the current tree.
 
+    Each move also carries a PLAN-TIME structural fingerprint of the seam
+    (``seam_fingerprint``, taken from the SAME indexed tree ``_extract_suggestions``
+    scored it against) so ``plan_extract`` can re-verify it at APPLY time — which
+    may run several moves later in the same pass, after earlier moves already
+    edited the tree (see ``_run_pass``: "line numbers stay exact even as earlier
+    moves in the same pass edit the file"). Line numbers alone don't carry
+    identity across that gap: a shift can silently resolve to DIFFERENT
+    statements that still happen to form a valid contiguous run. A fingerprint
+    mismatch refuses instead of extracting the drifted lines."""
+    from app.engine.source_index import indexed_project
+    from app.execution.extract_method import plan_extract, seam_fingerprint
+
+    index = indexed_project(str(project_root))
     moves: list[Move] = []
     for rel, seam in _extract_suggestions(project_root):
+        module = index.get(rel)
+        fp = (seam_fingerprint(module.tree, seam["start"], seam["end"])
+              if module is not None else None)
         moves.append(Move(
             operator="extract",
             target=f"{rel}:{seam['function']}()",
             description=(f"extract a {seam['lines_saved']}-line helper "
                         f"`{seam['name']}` from {seam['function']}() in {rel}"),
-            build_plan=lambda r=rel, s=seam: plan_extract(
-                str(project_root), r, s["start"], s["end"], s["name"]),
+            build_plan=lambda r=rel, s=seam, f=fp: plan_extract(
+                str(project_root), r, s["start"], s["end"], s["name"],
+                expected_fingerprint=f),
         ))
     return moves
 
