@@ -44,6 +44,8 @@ class RenderedSections:
     quality_html: str = ""
     trackrecord_html: str = ""
     outscope_html: str = ""
+    memory_html: str = ""
+    jsscope_html: str = ""
 
 
 def _esc(value: Any) -> str:
@@ -1367,4 +1369,65 @@ def _dream_section(project_root: str) -> str:
     body = (f"<p class='muted'>From <code>.apex/dream-digest.md</code> — "
             f"curated deterministically, zero tokens.</p><ul class='dream'>{lis}</ul>")
     return _card("dream", "💤", "Last dream — discovered while you were away", body)
+
+
+def _memory_vault_section(project_root: str) -> str:
+    """The vault roll-up — which of Apex's memory stores are present for this
+    project (the single deterministic mirror of everything it remembers). Renders
+    only when at least one store is present; a fresh project shows nothing. Cheap
+    (a few artifact reads), zero tokens."""
+    try:
+        from app.memory.vault import load_vault_view
+
+        view = load_vault_view(project_root)
+    except Exception:
+        return ""
+    sections = view.get("sections", {})
+    if not isinstance(sections, dict) or not sections:
+        return ""
+    present = sum(1 for s in sections.values()
+                  if isinstance(s, dict) and s.get("present"))
+    if present == 0:
+        return ""
+    total = len(sections)
+    rows = []
+    for name in sorted(sections):
+        sec = sections[name]
+        ok = bool(sec.get("present")) if isinstance(sec, dict) else False
+        dot = "●" if ok else "○"
+        rows.append(f"<li>{dot} {_esc(name.replace('_', ' '))}</li>")
+    body = (f"<div class='chips'>{_chip('stores present', f'{present}/{total}')}</div>"
+            f"<p class='muted'>The single deterministic roll-up of everything Apex "
+            f"remembers about this project — rebuildable, single-writer, zero tokens.</p>"
+            f"<ul class='vault'>{''.join(rows)}</ul>")
+    return _card("memory", "📓", "Memory — vault stores", body)
+
+
+def _js_scope_section(project_root: str) -> str:
+    """The JS/TS side of the stack — module graph, dependency hubs, untested
+    modules: the non-Python half Apex's Python-only analysis can't reach. Renders
+    only when a JS/TS project is present; a Python-only repo shows nothing."""
+    try:
+        from app.tools.js_project_profile import profile_js_project
+
+        p = profile_js_project(project_root)
+    except Exception:
+        return ""
+    if not getattr(p, "modules", None):
+        return ""
+    chips = (f"{_chip('modules', len(p.modules))}"
+             f"{_chip('test files', len(p.test_files))}"
+             f"{_chip('deps', len(p.external_dependencies))}"
+             f"{_chip('untested', p.untested_count)}")
+    hub_lis = "".join(
+        f"<li><code>{_esc(m)}</code> · fan-in {p.module_fanin.get(m, 0)}</li>"
+        for m in p.dependency_hubs[:5]) or "<li class='muted'>none</li>"
+    gap = ""
+    if p.hub_untested_modules:
+        top = p.hub_untested_modules[0]
+        gap = (f"<p class='muted'>Highest-leverage gap: <code>{_esc(top['module'])}</code> "
+               f"(fan-in {top['fan_in']}, no linked test).</p>")
+    body = (f"<div class='chips'>{chips}</div>{gap}"
+            f"<h4>Dependency hubs</h4><ul class='jsscope'>{hub_lis}</ul>")
+    return _card("jsscope", "🟨", "JS/TS scope", body)
 
