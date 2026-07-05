@@ -77,7 +77,7 @@ def _idea(value, branch, title, anchors=None):
 
 def _ipe_mod(ideas):
     class IPE:
-        def __init__(self, cfg, project_root=None):
+        def __init__(self, cfg, project_root=None, **kwargs):
             pass
 
         def run(self):
@@ -148,7 +148,7 @@ def test_gate_metrics_success_path_overwrites_initialisers():
     """On the profile-success path the three counts come ENTIRELY from the
     profile (2 / 1 / 25.0), never the ``0`` / ``0`` / ``0.0`` initialisers."""
     g = types.SimpleNamespace(letter="A", score=95)
-    hs = _FakeModule("app.engine.health_score", grade=lambda r: g)
+    hs = _FakeModule("app.engine.health_score", grade=lambda r, profile=None: g)
     prof = types.SimpleNamespace(
         security_finding_modules=["a", "b"],
         correctness_bug_modules=["c"],
@@ -172,7 +172,7 @@ def test_gate_metrics_except_path_resets_to_zero_not_initialiser():
     This is the path a mutated initialiser would most plausibly leak through, so
     pinning the exact zeros here is what keeps the survivor equivalent."""
     g = types.SimpleNamespace(letter="A", score=95)
-    hs = _FakeModule("app.engine.health_score", grade=lambda r: g)
+    hs = _FakeModule("app.engine.health_score", grade=lambda r, profile=None: g)
 
     class PP:
         def __init__(self, root):
@@ -196,7 +196,7 @@ def test_gate_metrics_empty_profile_lists_yield_zero_counts():
     same numbers as the initialisers, so the dead initialiser truly cannot be
     distinguished from the live success-path computation either."""
     g = types.SimpleNamespace(letter="B", score=80)
-    hs = _FakeModule("app.engine.health_score", grade=lambda r: g)
+    hs = _FakeModule("app.engine.health_score", grade=lambda r, profile=None: g)
     prof = types.SimpleNamespace(
         security_finding_modules=[],
         correctness_bug_modules=[],

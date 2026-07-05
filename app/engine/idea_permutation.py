@@ -96,10 +96,14 @@ class IdeaPermutationEngine:
         config: dict[str, Any] | None = None,
         project_root: str | Path = ".",
         extra_operators: list[Operator | dict[str, Any]] | None = None,
+        project_profile: ProjectProfile | None = None,
     ) -> None:
         cfg = config or {}
         self.project_root = str(project_root)
         self.profiler = ProjectProfiler(self.project_root)
+        # An optional pre-built profile lets a caller (e.g. the pulse snapshot)
+        # share one scan across sections; when None the engine profiles itself.
+        self._injected_profile = project_profile
         self.seeder = IdeaSeeder(self.project_root)
         # Plugins (or callers) can contribute operators to widen the alphabet.
         extra = [
@@ -228,7 +232,7 @@ class IdeaPermutationEngine:
         """Set up the per-run scoring context (profile, trends, relevance, dedup
         graph, novelty counters, security pressure, learning memory) and return
         the handles the later phases share. No ideas are produced here."""
-        profile = self.profiler.profile()
+        profile = self._injected_profile if self._injected_profile is not None else self.profiler.profile()
         self.last_profile = profile  # recorders (signal trends) read this
         # Temporal convergence: which modules got WORSE since the last
         # recorded snapshot (rising churn while a risk on them ages)?

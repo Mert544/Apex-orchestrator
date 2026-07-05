@@ -224,17 +224,18 @@ _PULSE_TOP_MOVES = 3
 _PULSE_OUT_OF_SCOPE_FILES = 2
 
 
-def _pulse_grade(root: Path) -> dict:
+def _pulse_grade(root: Path, profile=None) -> dict:
     """The project's health grade (letter + score), read defensively.
 
-    Grounded in ``health_score.grade`` (a light profile + one detect pass). Any
-    failure collapses to a neutral, never-crash shape with an empty letter so the
+    Grounded in ``health_score.grade`` (a light profile + one detect pass). A
+    shared ``profile`` may be injected to skip a redundant re-scan. Any failure
+    collapses to a neutral, never-crash shape with an empty letter so the
     header still renders ("Grade: —") rather than aborting the whole snapshot.
     """
     try:
         from app.engine.health_score import grade
 
-        h = grade(str(root))
+        h = grade(str(root), profile=profile)
         return {"letter": h.letter, "score": int(h.score), "scope_line": h.scope_line}
     except Exception:
         return {"letter": "", "score": None, "scope_line": ""}
@@ -263,16 +264,20 @@ def _honest_analyzed_ratio(profile) -> float:
     return float(honest if honest is not None else 1.0)
 
 
-def _pulse_scope(root: Path) -> dict:
+def _pulse_scope(root: Path, profile=None) -> dict:
     """Honest analysis-coverage: analysed% (Python) vs out-of-scope%, plus the
     1-2 biggest out-of-scope files. Grounded in the profile's scope-accounting
     fields and ``scan_polyglot_facts``; degrades to the all-Python shape on any
-    failure so the section never crashes the snapshot."""
+    failure so the section never crashes the snapshot. A shared ``profile`` may
+    be injected to skip a redundant re-scan (it reads only fields present in
+    both the light and full flavors, so the output is unchanged)."""
     try:
         from app.tools.polyglot_facts import scan_polyglot_facts
-        from app.tools.project_profile import ProjectProfiler
 
-        profile = ProjectProfiler(str(root)).profile(light=True)
+        if profile is None:
+            from app.tools.project_profile import ProjectProfiler
+
+            profile = ProjectProfiler(str(root)).profile(light=True)
     except Exception:
         return {"all_python": True, "analyzed_pct": 100, "out_of_scope_pct": 0, "files": []}
 
@@ -331,14 +336,15 @@ def _pulse_scope_pcts(profile, out_ratio: float, unanalyzed_count: int) -> tuple
     return analyzed_pct, 100 - analyzed_pct
 
 
-def _pulse_moves(root: Path) -> list[dict]:
+def _pulse_moves(root: Path, profile=None) -> list[dict]:
     """The top few grounded next-moves: each idea's title + its concrete focus
     (the riskiest anchor symbol/line when the idea carries one).
 
-    Bounded idea-engine run (small budget) so the snapshot stays fast. Reads
-    defensively: any engine failure yields no moves rather than crashing. The
-    top moves are the highest-value ideas, ordered ``(-value, branch_path)`` so
-    the selection is deterministic for a fixed tree.
+    Bounded idea-engine run (small budget) so the snapshot stays fast. A shared
+    ``profile`` may be injected so the engine skips its own re-scan (the biggest
+    single cost). Reads defensively: any engine failure yields no moves rather
+    than crashing. The top moves are the highest-value ideas, ordered
+    ``(-value, branch_path)`` so the selection is deterministic for a fixed tree.
     """
     try:
         from app.engine.idea_permutation import IdeaPermutationEngine
@@ -347,6 +353,7 @@ def _pulse_moves(root: Path) -> list[dict]:
             {"max_total_ideas": _PULSE_MAX_IDEAS, "max_idea_depth": _PULSE_DEPTH,
              "breadth": _PULSE_BREADTH},
             project_root=str(root),
+            project_profile=profile,
         ).run()
         ideas = list(report.ideas or [])
     except Exception:
@@ -406,12 +413,26 @@ def _pulse_snapshot(root: Path) -> dict:
     Each section is read independently and defensively (any missing piece →
     that section degrades, never crashes), so the snapshot is total: it always
     returns a complete, renderable shape for any directory.
+
+    Performance: the three heavy sections (grade, scope, moves) each used to
+    re-scan the whole project independently. We now build ONE full profile here
+    and thread it into all three — a superset of what grade/scope read and the
+    exact flavor the idea engine builds — so the output is byte-identical while
+    the project is scanned once instead of three times. If the shared build
+    fails, ``profile`` is None and each section falls back to its own build,
+    preserving the previous per-section failure isolation.
     """
+    try:
+        from app.tools.project_profile import ProjectProfiler
+
+        profile = ProjectProfiler(str(root)).profile()
+    except Exception:
+        profile = None
     return {
         "project_root": str(root),
-        "grade": _pulse_grade(root),
-        "scope": _pulse_scope(root),
-        "moves": _pulse_moves(root),
+        "grade": _pulse_grade(root, profile),
+        "scope": _pulse_scope(root, profile),
+        "moves": _pulse_moves(root, profile),
         "trackrecord": _pulse_trackrecord(root),
     }
 

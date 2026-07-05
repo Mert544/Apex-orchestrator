@@ -1247,7 +1247,7 @@ def _grade_mods(h, old=None, capture=None):
             capture["saved"] = True
 
     hs = _FakeModule("app.engine.health_score",
-                     grade=lambda r: h,
+                     grade=lambda r, profile=None: h,
                      load_grade_snapshot=lambda r: old,
                      render_grade_diff_markdown=lambda o, n: "DIFFMD",
                      render_grade_markdown=lambda hh: "GRADEMD",

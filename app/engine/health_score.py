@@ -657,15 +657,22 @@ def _assemble(metrics: _GradeMetrics) -> tuple[int, list[Component], list[str]]:
     return max(0, 100 - penalty), components, fixes
 
 
-def grade(project_root: str | Path) -> HealthScore:
-    """Compute the project's health grade from its real structure."""
+def grade(project_root: str | Path, profile: Any | None = None) -> HealthScore:
+    """Compute the project's health grade from its real structure.
+
+    An already-built ``profile`` may be injected (a full profile is a superset
+    of the light one grade reads, so the grade is byte-identical) to avoid
+    re-scanning when a caller — e.g. the pulse snapshot — shares one profile
+    across sections. When omitted, the light profile is built as before.
+    """
     from app.tools.project_profile import ProjectProfiler, render_analysis_scope_line
 
     # Light profile: skips the four slow git/doc subprocess scans (churn, debt
     # age, security-exposure age, doc drift) the grade never reads — so grading
     # (and `apex ascend`, which re-grades before+after every round) is ~200x
     # faster on a large repo with a byte-identical grade. See ProjectProfiler.profile.
-    profile = ProjectProfiler(str(project_root)).profile(light=True)
+    if profile is None:
+        profile = ProjectProfiler(str(project_root)).profile(light=True)
 
     metrics = _collect_metrics(project_root, profile)
     score, components, fixes = _assemble(metrics)

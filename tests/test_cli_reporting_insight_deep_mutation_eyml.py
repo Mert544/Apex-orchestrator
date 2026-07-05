@@ -284,13 +284,13 @@ def _tests_rep_eyml__t_render_gate_no_baseline_section(m):
 
 def _tests_rep2_eyml__t_pulse_grade_ok(m):
     g = types.SimpleNamespace(letter='B', score=82, scope_line='sl')
-    hs = _FakeModule('app.engine.health_score', grade=lambda r: g)
+    hs = _FakeModule('app.engine.health_score', grade=lambda r, profile=None: g)
     with _inject(**{'app.engine.health_score': hs}):
         out = m['_pulse_grade'](Path('/x'))
     assert out == {'letter': 'B', 'score': 82, 'scope_line': 'sl'}, out
 
 def _tests_rep2_eyml__t_pulse_grade_failure(m):
-    hs = _FakeModule('app.engine.health_score', grade=lambda r: (_ for _ in ()).throw(RuntimeError()))
+    hs = _FakeModule('app.engine.health_score', grade=lambda r, profile=None: (_ for _ in ()).throw(RuntimeError()))
     with _inject(**{'app.engine.health_score': hs}):
         out = m['_pulse_grade'](Path('/x'))
     assert out == {'letter': '', 'score': None, 'scope_line': ''}, out
@@ -370,7 +370,7 @@ def _tests_rep2_eyml___ipe_mod(ideas, captured_cfg=None):
 
     class IPE:
 
-        def __init__(self, cfg, project_root=None):
+        def __init__(self, cfg, project_root=None, **kwargs):
             if captured_cfg is not None:
                 captured_cfg.update(cfg)
 
@@ -460,7 +460,7 @@ def _tests_rep2_eyml__t_pulse_trackrecord_skip_blank_key(m):
 
 def _tests_rep2_eyml__t_gate_metrics_ok(m):
     g = types.SimpleNamespace(letter='A', score=95)
-    hs = _FakeModule('app.engine.health_score', grade=lambda r: g)
+    hs = _FakeModule('app.engine.health_score', grade=lambda r, profile=None: g)
     prof = types.SimpleNamespace(security_finding_modules=['a', 'b'], correctness_bug_modules=['c'], out_of_scope_ratio=0.25)
     with _inject(**{'app.engine.health_score': hs, 'app.tools.project_profile': _tests_rep2_eyml___profiler_mod(prof)}):
         out = m['_gate_metrics'](Path('/x'))
@@ -469,7 +469,7 @@ def _tests_rep2_eyml__t_gate_metrics_ok(m):
     assert out['out_of_scope_pct'] == 25.0, out
 
 def _tests_rep2_eyml__t_gate_metrics_grade_fail(m):
-    hs = _FakeModule('app.engine.health_score', grade=lambda r: (_ for _ in ()).throw(RuntimeError()))
+    hs = _FakeModule('app.engine.health_score', grade=lambda r, profile=None: (_ for _ in ()).throw(RuntimeError()))
     prof = types.SimpleNamespace(security_finding_modules=[], correctness_bug_modules=[], out_of_scope_ratio=0.0)
     with _inject(**{'app.engine.health_score': hs, 'app.tools.project_profile': _tests_rep2_eyml___profiler_mod(prof)}):
         out = m['_gate_metrics'](Path('/x'))
@@ -477,7 +477,7 @@ def _tests_rep2_eyml__t_gate_metrics_grade_fail(m):
 
 def _tests_rep2_eyml__t_gate_metrics_profile_fail(m):
     g = types.SimpleNamespace(letter='A', score=95)
-    hs = _FakeModule('app.engine.health_score', grade=lambda r: g)
+    hs = _FakeModule('app.engine.health_score', grade=lambda r, profile=None: g)
 
     class PP:
 
@@ -493,7 +493,7 @@ def _tests_rep2_eyml__t_gate_metrics_profile_fail(m):
 
 def _tests_rep2_eyml__t_gate_metrics_oos_rounding(m):
     g = types.SimpleNamespace(letter='A', score=95)
-    hs = _FakeModule('app.engine.health_score', grade=lambda r: g)
+    hs = _FakeModule('app.engine.health_score', grade=lambda r, profile=None: g)
     prof = types.SimpleNamespace(security_finding_modules=[], correctness_bug_modules=[], out_of_scope_ratio=0.12345)
     with _inject(**{'app.engine.health_score': hs, 'app.tools.project_profile': _tests_rep2_eyml___profiler_mod(prof)}):
         out = m['_gate_metrics'](Path('/x'))
@@ -814,7 +814,7 @@ def _tests_rep4_eyml__t_gate_compare_oos_missing_keys(m):
 
 def _tests_rep4_eyml__t_gate_metrics_oos_attr_missing(m):
     g = types.SimpleNamespace(letter='A', score=95)
-    hs = _FakeModule('app.engine.health_score', grade=lambda r: g)
+    hs = _FakeModule('app.engine.health_score', grade=lambda r, profile=None: g)
     prof = types.SimpleNamespace(security_finding_modules=[], correctness_bug_modules=[])
 
     class PP:
@@ -891,7 +891,7 @@ def _tests_rep4_eyml__t_pulse_moves_anchor_index_zero(m):
 
     class IPE:
 
-        def __init__(self, cfg, project_root=None):
+        def __init__(self, cfg, project_root=None, **kwargs):
             pass
 
         def run(self):
@@ -905,7 +905,7 @@ def _tests_rep4_eyml__t_pulse_moves_value_round_4(m):
 
     class IPE:
 
-        def __init__(self, cfg, project_root=None):
+        def __init__(self, cfg, project_root=None, **kwargs):
             pass
 
         def run(self):
@@ -1557,7 +1557,7 @@ def _tests_rep5_eyml__t_parsers_fractal_tree_depth_default(m):
 
 def _tests_rep5_eyml__t_gate_metrics_local_inits_used_on_profile_fail(m):
     g = types.SimpleNamespace(letter='A', score=95)
-    hs = _FakeModule('app.engine.health_score', grade=lambda r: g)
+    hs = _FakeModule('app.engine.health_score', grade=lambda r, profile=None: g)
 
     class PP:
 
@@ -1633,7 +1633,7 @@ def _tests_rep6_eyml__t_pulse_scope_out_pct_x100(m):
 def _tests_rep6_eyml__t_gate_metrics_light_true(m):
     cap = {}
     g = types.SimpleNamespace(letter='A', score=95)
-    hs = _FakeModule('app.engine.health_score', grade=lambda r: g)
+    hs = _FakeModule('app.engine.health_score', grade=lambda r, profile=None: g)
     prof = types.SimpleNamespace(security_finding_modules=[], correctness_bug_modules=[], out_of_scope_ratio=0.0)
     with _inject(**{'app.engine.health_score': hs, 'app.tools.project_profile': _tests_rep6_eyml___profiler(prof, cap)}):
         m['_gate_metrics'](Path('/x'))
@@ -2406,7 +2406,7 @@ def _tests_ins3_eyml___grade_mods(h, old=None, capture=None):
     def save(root, hh):
         if capture is not None:
             capture['saved'] = True
-    hs = _FakeModule('app.engine.health_score', grade=lambda r: h, load_grade_snapshot=lambda r: old, render_grade_diff_markdown=lambda o, n: 'DIFFMD', render_grade_markdown=lambda hh: 'GRADEMD', save_grade_snapshot=save)
+    hs = _FakeModule('app.engine.health_score', grade=lambda r, profile=None: h, load_grade_snapshot=lambda r: old, render_grade_diff_markdown=lambda o, n: 'DIFFMD', render_grade_markdown=lambda hh: 'GRADEMD', save_grade_snapshot=save)
     return {'app.engine.health_score': hs}
 
 def _tests_ins3_eyml__t_cmd_grade_markdown(m):
@@ -2780,7 +2780,7 @@ def _tests_ins4_eyml___build_mod(brief, cap=None, save_path='/p/brief.json'):
 
     class IPE:
 
-        def __init__(self, cfg, project_root=None):
+        def __init__(self, cfg, project_root=None, **kwargs):
             if cap is not None:
                 cap.update(cfg=cfg)
 
