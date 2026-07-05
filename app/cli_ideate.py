@@ -299,12 +299,53 @@ def _optin_synthesis_kwargs(args) -> dict[str, bool]:
     return {name: bool(getattr(args, name, False)) for name in _OPTIN_SYNTHESIS_FLAGS}
 
 
+def _build_action_plan(bridge, report, args, target, plan_mode, draft, prove, auto, synthesis):
+    """Build the roadmap-ordered or tree plan per the user's flags — the ONE
+    selection both the initial plan and each cascade-drain replan reuse, so a
+    drain round can never silently drop the user's --phase/--auto/synthesis
+    choices (the bug the bridge's own _default_replan has)."""
+    if getattr(args, "roadmap", False):
+        # Roadmap-ordered plan: apply Stabilize→Secure→Evolve→Refine, with an
+        # optional --phase filter to act on a single phase.
+        return bridge.plan_roadmap(
+            report, phase=getattr(args, "phase", None) or None, mode=plan_mode,
+            top=args.top or None, draft=draft, project_root=str(target),
+            proof=prove, auto=auto, **synthesis)
+    return bridge.plan_tree(
+        report, mode=plan_mode, top=args.top or None, draft=draft,
+        project_root=str(target), proof=prove, auto=auto, **synthesis)
+
+
+def _make_drain_replan(bridge, args, target, plan_mode, draft, prove, auto, synthesis):
+    """A replan closure for the cascade-drain: re-run the idea engine and rebuild
+    the SAME plan the user selected (roadmap-vs-tree + phase/auto/synthesis),
+    narrowed (POSIX-normalized) to the files earlier fixes changed. 100% CLI-side,
+    engaged only with --drain; keeps every extra round scoped to the user's own
+    choices (the bridge default re-plans with a bare plan_tree and drops them)."""
+    from pathlib import Path
+
+    def _replan(changed):
+        from app.engine.idea_permutation import IdeaPermutationEngine
+
+        rep = IdeaPermutationEngine(project_root=str(target)).run()
+        plan = _build_action_plan(
+            bridge, rep, args, target, plan_mode, draft, prove, auto, synthesis)
+        wanted = {Path(c).as_posix() for c in changed if c}
+        plan.steps = [
+            s for s in plan.steps
+            if s.executable and Path(s.target).as_posix() in wanted
+        ]
+        return plan
+
+    return _replan
+
+
 def _ideate_action_plan(args, report, target):
     """Build the optional action plan + optional apply, returning a pair.
 
     Returns ``(action_plan, apply_results)`` — both ``None`` unless
-    ``--actions`` (and, for apply, ``--apply``) are set. Verbatim move of the
-    bridge wiring; opt-in semantics unchanged.
+    ``--actions`` (and, for apply, ``--apply``) are set. Opt-in semantics
+    unchanged.
     """
     from app.engine.idea_action_bridge import IdeaActionBridge
 
@@ -324,43 +365,45 @@ def _ideate_action_plan(args, report, target):
     # filter to qualifying targets, so this surfaces exactly what applies. Read
     # DEFENSIVELY so a Namespace predating the flag simply leaves auto off.
     _auto = bool(getattr(args, "auto", False))
-    if getattr(args, "roadmap", False):
-        # Roadmap-ordered plan: apply Stabilize→Secure→Evolve→Refine, with an
-        # optional --phase filter to act on a single phase.
-        action_plan = bridge.plan_roadmap(
-            report,
-            phase=getattr(args, "phase", None) or None,
-            mode=_plan_mode,
-            top=args.top or None,
-            draft=_draft,
-            project_root=str(target),
-            proof=_prove,
-            auto=_auto,
-            **_synthesis,
-        )
-    else:
-        action_plan = bridge.plan_tree(
-            report,
-            mode=_plan_mode,
-            top=args.top or None,
-            draft=_draft,
-            project_root=str(target),
-            proof=_prove,
-            auto=_auto,
-            **_synthesis,
-        )
+    action_plan = _build_action_plan(
+        bridge, report, args, target, _plan_mode, _draft, _prove, _auto, _synthesis)
     apply_results = None
     # Strictly opt-in apply: only when --apply is passed; gated by mode + safety.
     if getattr(args, "apply", False):
+        _drain = getattr(args, "drain", False)
         apply_results = bridge.apply_plan(
             action_plan,
             str(target),
             mode=getattr(args, "mode", None) or "supervised",
             verify=getattr(args, "verify", False),
             max_apply=(args.max_apply or None) if getattr(args, "max_apply", 0) else None,
+            max_attempts=(args.max_attempts or None) if getattr(args, "max_attempts", 0) else None,
             commit=getattr(args, "commit", False),
+            drain=_drain,
+            # Preserve an explicit 0 (the bridge honors max_rounds=0 as "no extra
+            # drain rounds"); only a missing/None attribute falls back to 8.
+            max_rounds=(getattr(args, "max_rounds", None)
+                        if getattr(args, "max_rounds", None) is not None else 8),
+            replan=_make_drain_replan(
+                bridge, args, target, _plan_mode, _draft, _prove, _auto, _synthesis
+            ) if _drain else None,
         )
     return action_plan, apply_results
+
+
+def _print_apply_extras(apply_results) -> None:
+    """Additive cascade-drain / attempts-budget summary lines — printed only when
+    the corresponding bound was armed (the keys are absent otherwise)."""
+    # Cascade-drain summary — present only when --drain armed the outer loop.
+    if apply_results.get("drain_rounds") is not None:
+        converged = apply_results.get("converged")
+        conv_note = "converged" if converged else "stopped at max-rounds"
+        print(f"drained {apply_results['drain_rounds']} round(s) — {conv_note}")
+    # Attempts budget — present only when --max-attempts armed the cap.
+    if apply_results.get("attempted") is not None:
+        exhausted = apply_results.get("attempts_exhausted")
+        exh_note = " (budget exhausted)" if exhausted else ""
+        print(f"{apply_results['attempted']} apply attempt(s){exh_note}")
 
 
 def _print_apply_results(apply_results) -> None:
@@ -383,6 +426,7 @@ def _print_apply_results(apply_results) -> None:
         f"{apply_results['rolled_back']} · blocked {apply_results['blocked']} "
         f"of {apply_results['total_executable']} executable steps"
     )
+    _print_apply_extras(apply_results)
     for r in apply_results["results"]:
         if r.get("rolled_back"):
             status = "↩️"
@@ -654,6 +698,28 @@ def register_parsers(subparsers) -> None:
         default=0,
         dest="max_apply",
         help="Cap how many steps a maintenance run applies (0 = no cap)",
+    )
+    ideate_parser.add_argument(
+        "--drain",
+        action="store_true",
+        help="With --apply: cascade-drain — re-detect only the changed files and "
+             "re-apply to a fixpoint (each round re-runs the SAME per-step gate + "
+             "rollback, preserving your --phase/--auto/synthesis choices)",
+    )
+    ideate_parser.add_argument(
+        "--max-rounds",
+        type=int,
+        default=8,
+        dest="max_rounds",
+        help="With --drain: cap the number of re-detect rounds (default 8)",
+    )
+    ideate_parser.add_argument(
+        "--max-attempts",
+        type=int,
+        default=0,
+        dest="max_attempts",
+        help="With --apply: cap total apply+verify attempts, including rolled-back "
+             "ones (0 = no cap)",
     )
     ideate_parser.add_argument(
         "--mode",

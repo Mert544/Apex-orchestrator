@@ -262,8 +262,11 @@ def _bounded_chain(project_root: str | Path, value_ranked: bool, apply: bool,
     * ``preview_skip_mutation`` (a DRY-RUN-only bound — ``not apply``) drops the
       un-previewable mutation objective(s) (:data:`_PREVIEW_SKIP_OBJECTIVES`), so an
       apply run still lands every objective;
-    * ``max_modules`` caps a multi-confluence scope to the top-K by centrality
-      (:func:`_centrality_capped`), a no-op on a whole-tree / single-confluence run.
+    * ``max_modules`` caps a multi-confluence scope to the top-K, a no-op on a
+      whole-tree / single-confluence run. When ``value_ranked`` is set the cap
+      keeps the top-K of the ALREADY value-ranked scope (so it never drops the
+      highest-value confluence the caller asked to prioritize); otherwise it keeps
+      the top-K by fan-in centrality (:func:`_centrality_capped`).
 
     With both bounds off (``None`` / ``False``) the result is the unbounded chain
     EXACTLY — the off-by-default byte-identity ``apex dream --land`` relies on."""
@@ -271,8 +274,15 @@ def _bounded_chain(project_root: str | Path, value_ranked: bool, apply: bool,
     if preview_skip_mutation and not apply:
         objectives = [o for o in objectives if o not in _PREVIEW_SKIP_OBJECTIVES]
     modules = _chain_scope(project_root, value_ranked=value_ranked)
-    if max_modules is not None and modules:
-        modules = _centrality_capped(modules, project_root, max_modules)
+    if max_modules is not None and max_modules > 0 and modules:
+        if value_ranked:
+            # Preserve the value ranking: take the top-K of the already
+            # value-sorted scope. Re-sorting by centrality here (as the default
+            # path does) would truncate by an UNRELATED key and could drop the
+            # single highest-value confluence --value-ranked exists to keep.
+            modules = modules[:max_modules]
+        else:
+            modules = _centrality_capped(modules, project_root, max_modules)
     return objectives, modules
 
 

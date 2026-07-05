@@ -1680,6 +1680,20 @@ def _function_edits(
     return edits
 
 
+def _is_honest_decorator_import(module: str | None, alias: ast.alias) -> bool:
+    """True for a CANONICAL, non-aliased ``from <trusted-root> import
+    <trusted-decorator>`` (e.g. ``from functools import lru_cache``) — an honest
+    import of the REAL stdlib symbol, which is the opposite of a shadow, so
+    :func:`_module_bound_names` must NOT record it. Any rebind (``... as x``,
+    ``from mymod import lru_cache``) or a plain ``import x`` yields False and is
+    still recorded (and still disqualifies the bare decorator form)."""
+    return (
+        alias.asname is None
+        and module in _TRANSPARENT_DECORATOR_ROOTS
+        and alias.name in _TYPE_TRANSPARENT_DECORATORS
+    )
+
+
 def _module_bound_names(tree: ast.Module) -> frozenset[str]:
     """Every NAME bound at the MODULE top level — a ``def``/``class`` name, an
     ``import``/``from`` import name (the ``as`` alias when present, else the
@@ -1692,14 +1706,24 @@ def _module_bound_names(tree: ast.Module) -> frozenset[str]:
     trusted name to a return-TRANSFORMING callable) correctly disqualifies the bare
     form. A conservative, deterministic over-approximation: only TOP-LEVEL bindings
     matter (a name bound inside a function is that function's local, not a module
-    shadow of the decorator)."""
+    shadow of the decorator).
+
+    EXCEPTION (else the set self-shadows an honest import): a CANONICAL, non-aliased
+    ``from functools import lru_cache`` binds the trusted name to the REAL stdlib
+    symbol — that is the opposite of a shadow, so it is NOT added. Only such a
+    ``from <trusted-root> import <trusted-decorator>`` (no ``as``) is skipped; a
+    rebind (``import wrap as lru_cache``, ``from mymod import lru_cache``) or any
+    later ``def``/assignment of the name is still recorded and still disqualifies
+    the bare decorator form."""
     names: set[str] = set()
     for stmt in tree.body:
         if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             names.add(stmt.name)
         elif isinstance(stmt, (ast.Import, ast.ImportFrom)):
+            module = getattr(stmt, "module", None)  # None for a plain ``import x``
             for alias in stmt.names:
-                names.add(alias.asname or alias.name.split(".")[0])
+                if not _is_honest_decorator_import(module, alias):
+                    names.add(alias.asname or alias.name.split(".")[0])
         elif isinstance(stmt, (ast.Assign, ast.AnnAssign, ast.AugAssign,
                                ast.For, ast.AsyncFor, ast.With, ast.AsyncWith)):
             for node in ast.walk(stmt):

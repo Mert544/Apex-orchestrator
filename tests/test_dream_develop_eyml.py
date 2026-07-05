@@ -413,6 +413,53 @@ def test_max_modules_caps_confluences_by_centrality(tmp_path):
     assert again.modules == bounded.modules
 
 
+def test_value_ranked_cap_preserves_value_order_not_centrality(tmp_path):
+    # --value-ranked + --max-modules must keep the top-K of the VALUE ranking, not
+    # re-sort by centrality (which would drop the highest-VALUE confluence the
+    # caller asked to prioritize). Regression: the cap used to always re-sort by
+    # fan-in even under value_ranked.
+    _multi_confluence_project(tmp_path)
+    vfull = dream_develop(str(tmp_path), apply=False, verify=False, value_ranked=True)
+    assert len(vfull.modules) >= 3
+    vcap = dream_develop(str(tmp_path), apply=False, verify=False,
+                         value_ranked=True, max_modules=2)
+    assert vcap.modules == vfull.modules[:2]      # value order preserved
+    assert vfull.modules[0] in vcap.modules       # the #1-value module is kept
+    # It genuinely differs from the centrality cap (so --value-ranked bites).
+    ccap = dream_develop(str(tmp_path), apply=False, verify=False,
+                         value_ranked=False, max_modules=2)
+    assert vcap.modules != ccap.modules
+
+
+def test_non_positive_max_modules_is_a_no_op(tmp_path):
+    # max_modules <= 0 is a no-op in the engine (keep all confluences) — never a
+    # "cap to zero". The CLI relies on this to avoid a false "capped to top 0"
+    # disclosure.
+    _multi_confluence_project(tmp_path)
+    full = dream_develop(str(tmp_path), apply=False, verify=False)
+    zero = dream_develop(str(tmp_path), apply=False, verify=False, max_modules=0)
+    assert zero.modules == full.modules
+    neg = dream_develop(str(tmp_path), apply=False, verify=False, max_modules=-3)
+    assert neg.modules == full.modules
+
+
+def test_cmd_dream_land_max_modules_zero_makes_no_false_cap_claim(tmp_path, capsys):
+    # `apex dream --land --max-modules 0` retains every confluence AND must not
+    # print a "capped to top 0" disclosure or a preview_bound — the cap is a no-op.
+    import argparse
+
+    from app.cli_insight import _cmd_dream_land
+
+    _multi_confluence_project(tmp_path)
+    rc = _cmd_dream_land(argparse.Namespace(
+        target=str(tmp_path), apply=False, fast=False, json=False,
+        preview=False, max_modules=0, value_ranked=False))
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "capped to top 0" not in out
+    assert "Bounded run" not in out
+
+
 def test_bounded_preview_deterministic_under_pythonhashseed(tmp_path):
     # The BOUNDED preview (both bounds on) is hashseed-invariant — the selection
     # keys are an integer fan-in + a path tiebreak and a fixed name set, so the

@@ -51,6 +51,7 @@ _DREAM_JOURNAL_REL = ".apex/dream-journal.json"
 _DREAM_DIGEST_REL = ".apex/dream-digest.md"
 _PROOF_REL = ".apex/proof-of-fix.json"
 _AGENDA_REL = ".apex/agenda.json"
+_EPISTEMIC_REL = ".epistemic/memory.json"
 
 
 def _absent(source: str) -> dict[str, Any]:
@@ -132,6 +133,50 @@ def _agenda_section(root: Path) -> dict[str, Any]:
     }
 
 
+def _epistemic_section(root: Path) -> dict[str, Any]:
+    """The epistemic-memory ARTIFACT (``.epistemic/memory.json``) as a summarised
+    vault section — what Apex has learned across ``apex scan``/``apex run`` (the
+    ``PersistentMemoryStore`` path).
+
+    Read as BYTES (``json.loads``), never by importing ``PersistentMemoryStore``,
+    so the vault stays a leaf reader and the store keeps its single-writer
+    contract — the same discipline :func:`_agenda_section` applies to ``.apex/``.
+
+    Contract (mirrors the sibling sections): absent → ``{"present": False,
+    "source": ...}``; unparseable or non-dict → ``{"present": True,
+    "readable": False, ...}``; readable → COUNT summaries only (known claims /
+    questions / runs + the last run's id), never the raw ``last_report``/
+    ``last_full_report`` blobs (report dumps would bloat the vault and its diffs)."""
+    path = root / _EPISTEMIC_REL
+    if not path.exists():
+        return _absent(_EPISTEMIC_REL)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = None
+    if not isinstance(data, dict):
+        return {"present": True, "source": _EPISTEMIC_REL, "readable": False}
+
+    def _count(key: str) -> int:
+        value = data.get(key)
+        return len(value) if isinstance(value, list) else 0
+
+    runs = data.get("runs")
+    runs = runs if isinstance(runs, list) else []
+    last_run_id = ""
+    if runs and isinstance(runs[-1], dict):
+        last_run_id = runs[-1].get("run_id", "") or ""
+    return {
+        "present": True,
+        "source": _EPISTEMIC_REL,
+        "readable": True,
+        "known_claims": _count("known_claims"),
+        "known_questions": _count("known_questions"),
+        "runs": len(runs),
+        "last_run_id": last_run_id,
+    }
+
+
 def load_vault_view(project_root: str | Path) -> dict[str, Any]:
     """Compose the vault view from the live stores (pure read, no writes)."""
     root = Path(project_root)
@@ -161,6 +206,10 @@ def load_vault_view(project_root: str | Path) -> dict[str, Any]:
             # engine (see _agenda_section for the circular-import/single-writer
             # rationale).
             "agenda": _agenda_section(root),
+            # Seventh section: the epistemic memory Apex builds across
+            # `apex scan`/`apex run` (.epistemic/memory.json), summarised as
+            # counts only — read as BYTES, never via PersistentMemoryStore.
+            "epistemic_memory": _epistemic_section(root),
         },
     }
 
@@ -244,6 +293,10 @@ def _section_line(name: str, section: dict[str, Any]) -> str:
                 f"{section['user']} user note(s); "
                 f"{len(section['retired'])} retired operator(s) "
                 f"(`{section['source']}`)")
+    if name == "epistemic_memory":
+        return (f"- **{name}** — {section['known_claims']} claim(s) / "
+                f"{section['known_questions']} question(s) / "
+                f"{section['runs']} run(s) (`{section['source']}`)")
     data = section.get("data")
     if isinstance(data, list):
         size = f"{len(data)} entrie(s)"

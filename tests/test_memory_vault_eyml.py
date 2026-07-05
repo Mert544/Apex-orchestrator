@@ -50,15 +50,16 @@ def test_bare_project_yields_all_absent_sections(tmp_path: Path):
     view = load_vault_view(tmp_path)
     assert view["schema_version"] == 1
     # CONSCIOUS PIN MOVE (living-assistant polish): the section set gains
-    # "agenda" — the sixth section, mirroring the `.apex/agenda.json` artifact
-    # (5 -> 6; see tests/test_vault_agenda_section_eyml.py for its contract).
+    # "epistemic_memory" — the seventh section, mirroring the
+    # `.epistemic/memory.json` artifact (6 -> 7; see
+    # tests/test_vault_epistemic_section_eyml.py for its contract).
     assert set(view["sections"]) == {
         "idea_memory", "dream_journal", "dream_digest",
-        "proof_of_fix", "track_record", "agenda"}
+        "proof_of_fix", "track_record", "agenda", "epistemic_memory"}
     assert all(not s["present"] for s in view["sections"].values())
     md = render_vault_markdown(view)
-    # CONSCIOUS PIN MOVE: 0/5 -> 0/6 (the agenda section joined the vault).
-    assert "0/6 memory store(s) present" in md
+    # CONSCIOUS PIN MOVE: 0/6 -> 0/7 (the epistemic-memory section joined).
+    assert "0/7 memory store(s) present" in md
     assert "No memory yet" in md
 
 
@@ -139,9 +140,9 @@ def test_cmd_vault_refresh_writes_and_prints_summary(tmp_path: Path, capsys):
         target=str(tmp_path), json=False, refresh=True))
     assert rc == 0
     out = capsys.readouterr().out
-    # CONSCIOUS PIN MOVE: 3/5 -> 3/6 (the agenda section joined the vault; no
-    # agenda artifact is seeded here, so the present-count stays 3).
-    assert "3/6 memory store(s) present" in out
+    # CONSCIOUS PIN MOVE: 3/6 -> 3/7 (the epistemic-memory section joined the
+    # vault; no .epistemic artifact is seeded here, so the present-count stays 3).
+    assert "3/7 memory store(s) present" in out
     assert (tmp_path / VAULT_REL).exists()
 
 

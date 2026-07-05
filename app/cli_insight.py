@@ -210,6 +210,12 @@ def _cmd_dream_land(args: argparse.Namespace) -> int:
     # from being silently overridden when --preview is also passed.
     max_modules = (args.max_modules if getattr(args, "max_modules", None) is not None
                    else (_PREVIEW_MAX_MODULES if preview else None))
+    # A non-positive cap is a no-op in the engine (_centrality_capped / the
+    # value-ranked slice both treat <= 0 as "keep all"), so normalize it to "no
+    # cap" HERE too — otherwise the disclosure below would claim "capped to top 0"
+    # while every confluence was actually retained.
+    if max_modules is not None and max_modules <= 0:
+        max_modules = None
 
     report = dream_develop(str(target), apply=apply,
                            fast=getattr(args, "fast", False),
@@ -225,18 +231,9 @@ def _cmd_dream_land(args: argparse.Namespace) -> int:
     record_dream_outcomes(report, str(target))
     record_dream_chain_memory(report, str(target))
 
-    # CLI-LOCAL disclosure of any bound the user armed — computed from the args the
-    # CLI already holds, never by mutating the shared DreamChainReport / renderer,
-    # so every other caller of those stays byte-identical.
-    bound = None
-    if preview or max_modules is not None or value_ranked:
-        bound = {
-            "max_modules": max_modules,
-            "value_ranked": value_ranked,
-            # The mutation objective is dropped only on a dry-run preview.
-            "skipped_mutation_objectives": bool(preview and not apply),
-        }
-
+    # CLI-LOCAL disclosure of any bound the user armed — never mutates the shared
+    # DreamChainReport / renderer, so every other caller stays byte-identical.
+    bound, note = _dream_bound_disclosure(preview, apply, max_modules, value_ranked)
     if args.json:
         payload = report.to_dict()
         if bound is not None:
@@ -244,18 +241,35 @@ def _cmd_dream_land(args: argparse.Namespace) -> int:
         print(json.dumps(payload, indent=2))
     else:
         print(render_dream_chain_markdown(report))
-        if bound is not None:
-            parts = []
-            if max_modules is not None:
-                parts.append(f"capped to top {max_modules} confluence module(s) by centrality")
-            if value_ranked:
-                parts.append("ordered by value (highest-leverage first)")
-            if bound["skipped_mutation_objectives"]:
-                parts.append("skipped the un-previewable mutation objective (strengthen-tests)")
-            print("Bounded run: " + "; ".join(parts)
-                  + " — re-run without --preview/--max-modules/--value-ranked "
-                  "for the exhaustive chain.")
+        if note is not None:
+            print(note)
     return 0
+
+
+def _dream_bound_disclosure(preview, apply, max_modules, value_ranked):
+    """The honest ``(json_dict, text_line)`` disclosure of any armed dream bound,
+    or ``(None, None)`` when no bound was requested. A non-positive ``max_modules``
+    has already been normalized to ``None`` by the caller, so a cap is disclosed
+    only when it actually bit."""
+    if not (preview or max_modules is not None or value_ranked):
+        return None, None
+    bound = {
+        "max_modules": max_modules,
+        "value_ranked": value_ranked,
+        # The mutation objective is dropped only on a dry-run preview.
+        "skipped_mutation_objectives": bool(preview and not apply),
+    }
+    parts = []
+    if max_modules is not None:
+        parts.append(f"capped to top {max_modules} confluence module(s) by centrality")
+    if value_ranked:
+        parts.append("ordered by value (highest-leverage first)")
+    if bound["skipped_mutation_objectives"]:
+        parts.append("skipped the un-previewable mutation objective (strengthen-tests)")
+    note = ("Bounded run: " + "; ".join(parts)
+            + " — re-run without --preview/--max-modules/--value-ranked "
+            "for the exhaustive chain.")
+    return bound, note
 
 
 def _dream_land_write_proof(args: argparse.Namespace, report, target: Path) -> None:

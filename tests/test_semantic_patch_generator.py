@@ -62,6 +62,22 @@ def test_type_annotations_scans_past_unprovable_to_a_provable_function(tmp_path:
     assert "-> None" not in new_content
 
 
+def test_type_annotations_stamps_none_through_idiomatic_decorator_import(tmp_path: Path):
+    # A pure procedure decorated with a transparent decorator imported the
+    # IDIOMATIC way (`from functools import lru_cache`) must still earn a proven
+    # `-> None` — the canonical import is NOT a shadow of the trusted decorator.
+    # (A true rebind like `import wrap as lru_cache` is still correctly refused.)
+    src = "from functools import lru_cache\n\n\n@lru_cache\ndef bar():\n    print('hi')\n"
+    _write(tmp_path / "app" / "m.py", src)
+    generator = SemanticPatchGenerator()
+    patch_plan = {"target_files": ["app/m.py"], "title": "Add type annotations", "task_id": "t-lru"}
+
+    result = generator.generate(project_root=tmp_path, patch_plan=patch_plan)
+
+    assert result.transform_type == "add_type_annotations"
+    assert "def bar() -> None:" in result.patch_requests[0]["new_content"]
+
+
 def test_type_annotations_no_patch_when_nothing_provable(tmp_path: Path):
     # A module whose only unannotated function has an unprovable return must yield
     # NO semantic type-annotation patch — the generator's honest ``fallback_draft``
