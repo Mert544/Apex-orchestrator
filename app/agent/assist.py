@@ -176,12 +176,13 @@ def _resolve_commit(comprehension: Comprehension, apply: bool, commit: bool) -> 
 # "what should I build next?" preview must answer in seconds, not the ~7 min the
 # unbounded chain takes on a multi-module project. The bound is the CHEAPEST one
 # that keeps the leading value-led directions (see ``dream_develop`` for the
-# profile): cap the per-confluence module fan-out to the top ``_DREAM_MAX_MODULES``
-# by centrality, and skip the un-previewable mutation-testing objective (its
-# generation runs the suite per mutant per module — irreducibly minutes — and is
-# disclosed by the narrative, never silently dropped). Both are deterministic, so
-# the same request renders byte-identical run to run.
-_DREAM_MAX_MODULES = 12
+# profile): cap the per-confluence module fan-out to the top
+# ``_PREVIEW_MAX_MODULES`` by centrality, and skip the un-previewable
+# mutation-testing objective (its generation runs the suite per mutant per module
+# — irreducibly minutes — and is disclosed by the narrative, never silently
+# dropped). Both are deterministic, so the same request renders byte-identical run
+# to run. The bound lives in ``dream_develop`` as the single source of truth,
+# shared with the ``apex dream --land --preview`` CLI flag.
 
 
 def _dream_route(request: str, comprehension: Comprehension,
@@ -195,16 +196,18 @@ def _dream_route(request: str, comprehension: Comprehension,
 
     BOUNDED for interactivity: the preview passes ``max_modules`` /
     ``preview_skip_mutation`` so a multi-module project answers in seconds while
-    the leading value-led directions are preserved (see :data:`_DREAM_MAX_MODULES`
-    and ``dream_develop``). The exhaustive ``apex dream --land`` path is unbounded
-    and unchanged; only this read-only preview opts in. ``skipped`` records the
-    directions the bound traded for latency, so the narrative stays HONEST."""
+    the leading value-led directions are preserved (see
+    :data:`_PREVIEW_MAX_MODULES` and ``dream_develop``). The exhaustive
+    ``apex dream --land`` path is unbounded and unchanged; only this read-only
+    preview opts in. ``skipped`` records the directions the bound traded for
+    latency, so the narrative stays HONEST."""
     from app.engine.dream_develop import (
+        _PREVIEW_MAX_MODULES,
         _PREVIEW_SKIP_OBJECTIVES,
         dream_develop,
     )
 
-    report = dream_develop(target, apply=False, max_modules=_DREAM_MAX_MODULES,
+    report = dream_develop(target, apply=False, max_modules=_PREVIEW_MAX_MODULES,
                            preview_skip_mutation=True)
     contributions = report.contributions
     payload = {

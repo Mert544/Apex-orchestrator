@@ -26,7 +26,11 @@ def test_add_docstring_transform(tmp_path: Path):
 
 
 def test_add_type_annotations_transform(tmp_path: Path):
-    _write(tmp_path / "app" / "math.py", "def add(a, b):\n    return a + b\n")
+    # The return type must be PROVEN, not guessed: ``return 1`` proves ``-> int``.
+    # (This fixture previously returned ``a + b`` and asserted ``-> None:`` — a
+    # provably-wrong annotation the transform used to stamp blindly; the fix scans
+    # past unprovable functions, so the test now pins a proven landing.)
+    _write(tmp_path / "app" / "math.py", "def one():\n    return 1\n")
     generator = SemanticPatchGenerator()
     patch_plan = {"target_files": ["app/math.py"], "title": "Add type annotations", "task_id": "t-2"}
 
@@ -34,8 +38,41 @@ def test_add_type_annotations_transform(tmp_path: Path):
 
     assert result.transform_type == "add_type_annotations"
     pr = result.patch_requests[0]
-    assert "-> None:" in pr["new_content"]
+    assert "-> int:" in pr["new_content"]
     assert pr["expected_old_content"] is not None
+
+
+def test_type_annotations_scans_past_unprovable_to_a_provable_function(tmp_path: Path):
+    # The FIRST unannotated function (``mystery``) is unprovable (returns a bare
+    # value expression), so the transform must not stamp a guessed ``-> None`` on
+    # it — it scans PAST to the next function (``one``) whose ``return 1`` proves
+    # ``-> int``. This pins the "never land the first function blindly" contract.
+    src = "def mystery(a, b):\n    return a + b\n\n\ndef one():\n    return 1\n"
+    _write(tmp_path / "app" / "math.py", src)
+    generator = SemanticPatchGenerator()
+    patch_plan = {"target_files": ["app/math.py"], "title": "Add type annotations", "task_id": "t-2b"}
+
+    result = generator.generate(project_root=tmp_path, patch_plan=patch_plan)
+
+    assert result.transform_type == "add_type_annotations"
+    new_content = result.patch_requests[0]["new_content"]
+    assert "def one() -> int:" in new_content
+    # ``mystery`` stays untouched — no guessed annotation on an unprovable return.
+    assert "def mystery(a, b):" in new_content
+    assert "-> None" not in new_content
+
+
+def test_type_annotations_no_patch_when_nothing_provable(tmp_path: Path):
+    # A module whose only unannotated function has an unprovable return must yield
+    # NO semantic type-annotation patch — the generator's honest ``fallback_draft``
+    # path takes over instead of landing a wrong annotation on the user's file.
+    _write(tmp_path / "app" / "math.py", "def add(a, b):\n    return a + b\n")
+    generator = SemanticPatchGenerator()
+    patch_plan = {"target_files": ["app/math.py"], "title": "Add type annotations", "task_id": "t-2c"}
+
+    result = generator.generate(project_root=tmp_path, patch_plan=patch_plan)
+
+    assert result.transform_type != "add_type_annotations"
 
 
 def test_add_guard_clause_transform(tmp_path: Path):

@@ -98,7 +98,7 @@ def test_family_parser_registration_covers_every_command():
 
     assert set(sub.choices) == {
         "auto", "simulate", "evolve", "maintain", "develop", "shield", "plan", "ascend",
-        "grade", "impact", "mutants", "duplication", "brief", "dream", "intelligence", "polyglot", "readiness", "fix-risk", "discoveries", "outcomes", "recipes", "changelog", "explain", "objectives", "trackrecord", "scope", "proof", "vault", "agenda",
+        "grade", "impact", "mutants", "duplication", "brief", "dream", "intelligence", "polyglot", "readiness", "fix-risk", "discoveries", "outcomes", "recipes", "changelog", "explain", "objectives", "trackrecord", "scope", "js-scope", "proof", "vault", "agenda",
         "ideate", "review", "rename", "move", "signature", "rewrite", "teach", "extract", "inline",
         "assist", "comprehend", "bench", "run", "canvas", "changed", "idea-html", "partition",
         "scan", "agents", "consensus", "daemon", "self-audit",

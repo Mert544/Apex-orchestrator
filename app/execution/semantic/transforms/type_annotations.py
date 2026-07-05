@@ -2,10 +2,13 @@
 
 Two surfaces live here:
 
-  - :func:`apply` — the original, naive single-function ``-> None`` rewrite the
-    semantic-patch generator drives (``add_type_annotations`` title). Its
-    contract is unchanged: annotate the FIRST unannotated function's return as
-    ``-> None``. Kept byte-for-byte so existing callers/tests are unaffected.
+  - :func:`apply` — the single-function rewrite the semantic-patch generator
+    drives (``add_type_annotations`` title). It annotates the FIRST unannotated
+    function whose return type is PROVABLE from the AST (reusing the same
+    ``_infer_return_type`` oracle :func:`plan_type_annotations` uses), stamping
+    ``-> None`` only for a proven pure procedure and never guessing — an
+    unprovable candidate is scanned past, and a module with nothing provable
+    yields no patch (the generator's honest ``fallback_draft`` path takes over).
 
   - :func:`plan_type_annotations` — the develop-objective surface: a
     ``RenamePlan`` that annotates EVERY function in a module whose types are
@@ -123,6 +126,15 @@ def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
 
     lines = source.splitlines(keepends=True)
     modified = False
+    proven_name = ""
+    proven_type = ""
+
+    # Resolve the two module-wide facts an ``ast.FunctionDef`` cannot carry alone
+    # once, before the walk — the same pair :func:`infer_annotations` threads: the
+    # enclosing class name (for the ``self``/``cls`` forward-ref case) and the
+    # top-level bound names (the decorator shadow set).
+    class_names = _method_class_names(tree)
+    module_bound = _module_bound_names(tree)
 
     for node in ast.walk(tree):
         if (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))) and (node.returns is None):
@@ -130,9 +142,21 @@ def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
             line = lines[lineno]
             stripped = line.rstrip()
             if (stripped.endswith(":")) and ("->" not in stripped):
-                new_line = stripped[:-1] + " -> None:\n"
+                # Only stamp a return type the AST PROVES. ``_infer_return_type``
+                # returns the string ``"None"`` for a pure procedure (a legitimate
+                # ``-> None``), a concrete type for a provable value return, and the
+                # Python object ``None`` when nothing is provable — in which case we
+                # never guess: scan past to the next candidate rather than land a
+                # wrong (but structurally test-invisible) annotation.
+                inferred = _infer_return_type(
+                    node, class_names.get(id(node)), module_bound)
+                if inferred is None:
+                    continue
+                new_line = stripped[:-1] + f" -> {inferred}:\n"
                 lines[lineno] = new_line
                 modified = True
+                proven_name = node.name
+                proven_type = inferred
                 break
 
     if not modified:
@@ -146,7 +170,10 @@ def apply(rel_path: str, source: str, title: str) -> SemanticPatchResult | None:
             "expected_old_content": source,
         }],
         transform_type="add_type_annotations",
-        rationale=[f"Added missing return type annotation in {rel_path}."],
+        rationale=[
+            f"Added AST-proven return type '-> {proven_type}' to "
+            f"`{proven_name}` in {rel_path} (never guessed)."
+        ],
     )
 
 

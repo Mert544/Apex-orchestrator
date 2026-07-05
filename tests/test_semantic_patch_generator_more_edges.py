@@ -245,7 +245,10 @@ _CASES = {
         None, "add_docstring", "semantic",
     ),
     "type_anns": (
-        {"app/m.py": "def add(a, b):\n    return a + b\n"},
+        # A PROVABLE return (``return 1`` ⇒ ``int``) so the semantic
+        # ``add_type_annotations`` branch fires; an unprovable body (e.g.
+        # ``return a + b``) is now correctly refused and would fall back to draft.
+        {"app/m.py": "def one():\n    return 1\n"},
         {"target_files": ["app/m.py"], "title": "Add type annotations", "task_id": "c2"},
         None, "add_type_annotations", "semantic",
     ),

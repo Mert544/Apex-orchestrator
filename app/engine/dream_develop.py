@@ -87,6 +87,14 @@ CHAIN_GOAL = "ship-value"
 # narrative so the preview stays HONEST about what an interactive run skips.
 _PREVIEW_SKIP_OBJECTIVES: frozenset[str] = frozenset({"strengthen-tests"})
 
+# The default confluence-module cap for a BOUNDED preview (``apex dream --land
+# --preview`` and the interactive ``assist`` dream route): keep the top-K modules
+# by fan-in centrality so a multi-confluence project answers in seconds while the
+# leading value-led directions survive. Single source of truth for the bound —
+# imported by name (no ``__all__`` entry), the same private-constant convention as
+# :data:`_PREVIEW_SKIP_OBJECTIVES`.
+_PREVIEW_MAX_MODULES: int = 12
+
 
 @dataclass
 class LandedContribution:

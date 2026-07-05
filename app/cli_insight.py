@@ -11,8 +11,12 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from app.cli_common import _get_project_root
+
+if TYPE_CHECKING:
+    from app.tools.js_project_profile import JsProjectProfile
 
 def cmd_explain(args: argparse.Namespace) -> int:
     """Explain why a specific idea scored what it did — the engine's reasoning."""
@@ -187,6 +191,7 @@ def _cmd_dream_land(args: argparse.Namespace) -> int:
     DRY RUN (the default, no ``--apply``) never reaches the gated apply loop, so
     the preview is byte-identical regardless."""
     from app.engine.dream_develop import (
+        _PREVIEW_MAX_MODULES,
         dream_develop,
         record_dream_chain_memory,
         record_dream_outcomes,
@@ -196,9 +201,22 @@ def _cmd_dream_land(args: argparse.Namespace) -> int:
 
     target = Path(args.target).resolve() if args.target else _get_project_root()
     covered_only = resolve_covered_only(allow_weak=False, unattended=True)
-    report = dream_develop(str(target), apply=getattr(args, "apply", False),
+
+    preview = getattr(args, "preview", False)
+    apply = getattr(args, "apply", False)
+    value_ranked = getattr(args, "value_ranked", False)
+    # Explicit --max-modules N always wins; else --preview supplies the shared
+    # default cap; else no cap (the exhaustive chain). This keeps an explicit N
+    # from being silently overridden when --preview is also passed.
+    max_modules = (args.max_modules if getattr(args, "max_modules", None) is not None
+                   else (_PREVIEW_MAX_MODULES if preview else None))
+
+    report = dream_develop(str(target), apply=apply,
                            fast=getattr(args, "fast", False),
-                           covered_only=covered_only)
+                           covered_only=covered_only,
+                           max_modules=max_modules,
+                           value_ranked=value_ranked,
+                           preview_skip_mutation=preview)
     _dream_land_write_proof(args, report, target)
     # Learn-loop: feed the chain's OWN landed/withheld per-direction outcomes, and
     # its per-scope-module composition recipe, back into the SAME learn stores the
@@ -206,10 +224,37 @@ def _cmd_dream_land(args: argparse.Namespace) -> int:
     # chain, so the off-by-default tree stays byte-identical.
     record_dream_outcomes(report, str(target))
     record_dream_chain_memory(report, str(target))
+
+    # CLI-LOCAL disclosure of any bound the user armed — computed from the args the
+    # CLI already holds, never by mutating the shared DreamChainReport / renderer,
+    # so every other caller of those stays byte-identical.
+    bound = None
+    if preview or max_modules is not None or value_ranked:
+        bound = {
+            "max_modules": max_modules,
+            "value_ranked": value_ranked,
+            # The mutation objective is dropped only on a dry-run preview.
+            "skipped_mutation_objectives": bool(preview and not apply),
+        }
+
     if args.json:
-        print(json.dumps(report.to_dict(), indent=2))
+        payload = report.to_dict()
+        if bound is not None:
+            payload["preview_bound"] = bound
+        print(json.dumps(payload, indent=2))
     else:
         print(render_dream_chain_markdown(report))
+        if bound is not None:
+            parts = []
+            if max_modules is not None:
+                parts.append(f"capped to top {max_modules} confluence module(s) by centrality")
+            if value_ranked:
+                parts.append("ordered by value (highest-leverage first)")
+            if bound["skipped_mutation_objectives"]:
+                parts.append("skipped the un-previewable mutation objective (strengthen-tests)")
+            print("Bounded run: " + "; ".join(parts)
+                  + " — re-run without --preview/--max-modules/--value-ranked "
+                  "for the exhaustive chain.")
     return 0
 
 
@@ -1338,6 +1383,73 @@ def cmd_scope(args: argparse.Namespace) -> int:
     return 0
 
 
+def render_js_scope_markdown(profile: JsProjectProfile) -> str:
+    """The JS/TS project-scope report: module/dependency-graph size, the highest
+    fan-in hubs, and the untested modules — with the highest-leverage untested hub
+    called out. A pure formatter over the profiler's own already-computed fields;
+    the JS/TS analog of :func:`render_scope_markdown`. Deterministic, no model."""
+    n_mod = len(profile.modules)
+    n_test = len(profile.test_files)
+    n_edges = len(profile.dependency_edges)
+    n_ext = len(profile.external_dependencies)
+    lines = [
+        "# Apex JS/TS project scope",
+        "",
+        f"{n_mod} module(s), {n_test} test file(s), {n_edges} internal "
+        f"dependency edge(s), {n_ext} external package(s).",
+        "",
+    ]
+    if profile.dependency_hubs:
+        lines += ["## Dependency hubs (highest fan-in)", ""]
+        for m in profile.dependency_hubs:
+            lines.append(f"- `{m}` (fan-in {profile.module_fanin.get(m, 0)})")
+        lines.append("")
+    if profile.untested_modules:
+        shown = profile.untested_modules[:5]
+        lines += [
+            f"## Untested modules ({profile.untested_count} total, "
+            f"top {len(shown)} shown)",
+            "",
+        ]
+        for m in shown:
+            lines.append(f"- `{m}`")
+        lines.append("")
+    if profile.hub_untested_modules:
+        top = profile.hub_untested_modules[0]
+        lines += [
+            "## Highest-leverage gap: untested hub",
+            "",
+            f"`{top['module']}` has fan-in {top['fan_in']} and no linked test — "
+            "the single highest-leverage place to spend your next hour.",
+            "",
+        ]
+    lines.append(
+        "_Every number here is read from Apex's own deterministic JS/TS profile of "
+        "this project — zero-token, no model in the loop._"
+    )
+    return "\n".join(lines)
+
+
+def cmd_js_scope(args: argparse.Namespace) -> int:
+    """Report the JS/TS side of a project the way ``apex scope``/``apex hotspots``
+    do for Python: the module/dependency graph, the highest fan-in hubs, and the
+    untested modules (the untested hub is the highest-leverage gap). Deterministic,
+    LLM-free. Honest empty: a project with no JS/TS says so."""
+    import dataclasses
+
+    from app.tools.js_project_profile import profile_js_project
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    profile = profile_js_project(target)
+    if args.json:
+        print(json.dumps(dataclasses.asdict(profile), indent=2))
+    elif not profile.modules:
+        print("No JS/TS project detected at this root.")
+    else:
+        print(render_js_scope_markdown(profile))
+    return 0
+
+
 def register_parsers(subparsers) -> None:
     """Register the insight family's subcommands: grade, impact, brief, dream,
     outcomes, recipes, changelog, explain, objectives."""
@@ -1442,6 +1554,18 @@ def register_parsers(subparsers) -> None:
                               help="With --land: actually write the verified moves (default: dry run)")
     dream_parser.add_argument("--fast", action="store_true",
                               help="With --land: scope each per-move gate to the changed module")
+    dream_parser.add_argument("--preview", action="store_true",
+                              help="With --land: a fast bounded preview — cap to the top confluence "
+                                   "modules by centrality and skip the un-previewable mutation "
+                                   "objective (disclosed, never silent). Dry-run answer in seconds")
+    dream_parser.add_argument("--max-modules", type=int, default=None, dest="max_modules",
+                              help="With --land: cap the confluence scope to the top-N modules by "
+                                   "fan-in centrality. UNLIKE --preview this is NOT apply-gated — "
+                                   "with --apply it genuinely lands fewer confluences, not just "
+                                   "previews fewer")
+    dream_parser.add_argument("--value-ranked", action="store_true", dest="value_ranked",
+                              help="With --land: order the confluence scope by value (highest-leverage "
+                                   "modules first) instead of the default alphabetical order")
     dream_parser.add_argument("--json", action="store_true", help="Emit JSON")
     dream_parser.set_defaults(func=cmd_dream)
 
@@ -1590,6 +1714,17 @@ def register_parsers(subparsers) -> None:
     scope_parser.add_argument("--target", default="", help="Target project root")
     scope_parser.add_argument("--json", action="store_true", help="Emit JSON")
     scope_parser.set_defaults(func=cmd_scope)
+
+    # js-scope — the JS/TS analog of `apex scope`/`apex hotspots` (module graph,
+    # dependency hubs, untested modules) for the non-Python half of a stack
+    js_scope_parser = subparsers.add_parser(
+        "js-scope",
+        help="Report the JS/TS module graph, dependency hubs, and untested modules "
+             "(the JS/TS analog of `apex scope`/`apex hotspots`)",
+    )
+    js_scope_parser.add_argument("--target", default="", help="Target project root")
+    js_scope_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    js_scope_parser.set_defaults(func=cmd_js_scope)
 
     # explain — show why an idea scored what it did
     explain_parser = subparsers.add_parser(
