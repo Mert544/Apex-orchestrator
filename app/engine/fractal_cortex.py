@@ -70,24 +70,10 @@ class FractalCortex:
 
         meta = self.engine.meta_analyze(tree)
 
-        patches = []
+        patches: list[dict[str, Any]] = []
         patch_source = "fractal"
         if meta.recommended_action == "patch":
-            if self.use_semantic:
-                semantic_result = self._generate_semantic_patch(finding, meta)
-                if semantic_result and semantic_result.patch_requests:
-                    patches = self._convert_semantic_to_fractal_patches(
-                        semantic_result, finding
-                    )
-                    patch_source = "semantic"
-            if not patches:
-                patches = [
-                    p.to_dict()
-                    for p in self.fractal_patch_generator.generate(
-                        finding, meta.to_dict()
-                    )
-                ]
-                patch_source = "fractal"
+            patches, patch_source = self.build_patches(finding, meta, project_root)
 
         return CortexDecision(
             finding=finding,
@@ -99,7 +85,34 @@ class FractalCortex:
             patch_source=patch_source,
         )
 
-    def _generate_semantic_patch(self, finding: dict[str, Any], meta: dict[str, Any]):
+    def build_patches(self, finding: dict[str, Any], meta, project_root: str = "."):
+        """Build the patch dicts for a ``"patch"`` decision — the SEMANTIC generator
+        first (project-root aware, so it reads the real target file), the fractal
+        template only as a fallback. Returns ``(patches, patch_source)``.
+
+        Shared by :meth:`decide` (fresh analysis) AND the agent's cache-hit path,
+        so a cached tree lands the SAME correct semantic patch a fresh one does —
+        without this, a cache hit fell back to the fractal template, which for a
+        docstring finding with an empty ``target`` emits an unappliable ``def ():``."""
+        patches: list[dict[str, Any]] = []
+        patch_source = "fractal"
+        if self.use_semantic:
+            semantic_result = self._generate_semantic_patch(
+                finding, meta.to_dict(), project_root)
+            if semantic_result and semantic_result.patch_requests:
+                patches = self._convert_semantic_to_fractal_patches(
+                    semantic_result, finding)
+                patch_source = "semantic"
+        if not patches:
+            patches = [
+                p.to_dict()
+                for p in self.fractal_patch_generator.generate(finding, meta.to_dict())
+            ]
+            patch_source = "fractal"
+        return patches, patch_source
+
+    def _generate_semantic_patch(self, finding: dict[str, Any], meta: dict[str, Any],
+                                 project_root: str = "."):
         """Try to generate semantic patch for the finding."""
         issue = finding.get("issue", "").lower()
         file_path = finding.get("file", "")
@@ -128,7 +141,7 @@ class FractalCortex:
 
         try:
             result = self.semantic_patch_generator.generate(
-                project_root=".",
+                project_root=project_root,
                 patch_plan=patch_plan,
             )
             return result

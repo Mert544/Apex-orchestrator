@@ -175,33 +175,104 @@ def cmd_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def _resolve_fractal_mode(args: argparse.Namespace):
+    """Resolve the execution mode for ``fractal analyze``: an explicit ``--mode``
+    wins; else ``--commit`` implies AUTONOMOUS, ``--apply`` implies SUPERVISED, and
+    the default stays REPORT (read-only) — the same precedence ``apex auto`` uses."""
+    from app.policies.mode_policy import ApexMode
+
+    explicit = getattr(args, "mode", None)
+    if explicit:
+        return ApexMode(explicit)
+    if getattr(args, "commit", False):
+        return ApexMode.AUTONOMOUS
+    if getattr(args, "apply", False):
+        return ApexMode.SUPERVISED
+    return ApexMode.REPORT
+
+
+def _load_fractal_agent(kind: str):
+    """Instantiate the requested fractal agent, importing only the ONE class
+    needed (a ``from ... import`` so test module-injection that fakes a single
+    agent still resolves)."""
+    if kind == "teststub":
+        from app.agents.fractal_agents import FractalTestStubAgent as _Agent
+    elif kind == "docstring":
+        from app.agents.fractal_agents import FractalDocstringAgent as _Agent
+    else:
+        from app.agents.fractal_agents import FractalSecurityAgent as _Agent
+    return _Agent()
+
+
+def _fractal_analyze(args: argparse.Namespace, target: Path) -> int:
+    """`apex fractal analyze` — scan + fractal reasoning, with optional
+    verified-with-rollback --apply/--commit. Returns the process exit code."""
+    from app.policies.mode_policy import ModePolicy, apply_cli_overrides
+
+    # Default agent: security for a read-only analysis (unchanged), but docstring
+    # for --apply — the safe, behavior-preserving auto-patch target (auto-patching
+    # a security finding is riskier and stays opt-in via --agent security --apply).
+    kind = getattr(args, "agent", None) or (
+        "docstring" if getattr(args, "apply", False) else "security")
+    agent = _load_fractal_agent(kind)
+
+    # Build the mode policy from the flags, then hand it to the agent (its own
+    # _apply_patches gates on policy.auto_patch / .auto_commit + permissions).
+    policy = ModePolicy(mode=_resolve_fractal_mode(args))
+    apply_cli_overrides(
+        policy,
+        auto_patch=getattr(args, "apply", False),
+        auto_commit=getattr(args, "commit", False),
+        max_fractal_budget=getattr(args, "max_fractal_budget", None),
+        safety_policy=None,
+    )
+    # Every real agent (BaseFractalAgent) has set_mode_policy; guard so a minimal
+    # stub agent simply runs in its own default mode.
+    if hasattr(agent, "set_mode_policy"):
+        agent.set_mode_policy(policy)
+    # An explicit --max-fractal-budget wins (set_mode_policy also carries it via the
+    # policy; this reaffirms it and covers a stub agent that has none).
+    if getattr(args, "max_fractal_budget", None) is not None:
+        agent.max_fractal_budget = args.max_fractal_budget
+
+    # Enforce the clean-tree precondition whenever the RESOLVED mode requires it
+    # (autonomous, however it was reached), not just on the literal --commit flag —
+    # otherwise `--mode autonomous --apply` would skip it and patch a dirty target.
+    if policy.permissions.requires_clean_working_tree:
+        gate = policy.enforce_clean_working_tree(str(target))
+        if gate.blocked:
+            print(f"⚠️ {gate.message}")
+            return 1
+
+    result = agent.run(project_root=target, max_depth=args.depth)
+    scanned = result.get("scanned_files")
+    if scanned is not None:
+        print(f"Scanned {scanned} files, found {result['findings_count']} risks")
+    else:
+        print(f"Found {result['findings_count']} finding(s)")
+    print(f"Fractal analyzed {result['fractal_analyzed']} findings (depth={args.depth})")
+    if getattr(args, "apply", False):
+        # Count committed = SUCCESSFUL commits, never attempts — a failed commit
+        # (e.g. non-git target) must not be reported as "committed" (never fakes green).
+        committed = sum(1 for c in result.get("commits", []) if c.get("success"))
+        print(f"Applied {result['patches_applied']} patch(es), committed {committed}")
+    if args.json:
+        print(json.dumps(result, indent=2))
+    else:
+        from app.reporting.composer import ReportComposer
+
+        print(ReportComposer([result]).to_markdown())
+    return 0
+
+
 def cmd_fractal(args: argparse.Namespace) -> int:
     """Run fractal deep analysis on a finding or project."""
     target = Path(args.target).resolve() if args.target else _get_project_root()
 
     if args.subcommand == "analyze":
-        from app.agents.fractal_agents import FractalSecurityAgent
+        return _fractal_analyze(args, target)
 
-        agent = FractalSecurityAgent()
-        if args.max_fractal_budget is not None:
-            agent.max_fractal_budget = args.max_fractal_budget
-        result = agent.run(project_root=target, max_depth=args.depth)
-        print(
-            f"Scanned {result['scanned_files']} files, found {result['findings_count']} risks"
-        )
-        print(
-            f"Fractal analyzed {result['fractal_analyzed']} findings (depth={args.depth})"
-        )
-        if args.json:
-            print(json.dumps(result, indent=2))
-        else:
-            from app.reporting.composer import ReportComposer
-
-            composer = ReportComposer([result])
-            md = composer.to_markdown()
-            print(md)
-
-    elif args.subcommand == "tree":
+    if args.subcommand == "tree":
         from app.engine.fractal_5whys import Fractal5WhysEngine
 
         engine = Fractal5WhysEngine(max_depth=args.depth)
@@ -1052,6 +1123,33 @@ def register_parsers(subparsers) -> None:
         type=int,
         default=None,
         help="Max fractal analysis budget (default 10)",
+    )
+    fractal_analyze_parser.add_argument(
+        "--agent",
+        default=None,
+        choices=["docstring", "teststub", "security"],
+        help="Which fractal agent to run (default: security for analysis, "
+             "docstring for --apply — the safe, behavior-preserving auto-patch target)",
+    )
+    fractal_analyze_parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="Apply the fractal agent's patches (verified + auto-rolled-back per "
+             "step); by default docstring/test-stub findings only — pass "
+             "--agent security to also auto-patch high-confidence security findings",
+    )
+    fractal_analyze_parser.add_argument(
+        "--commit",
+        action="store_true",
+        help="With --apply: auto-commit each landed patch (requires a clean target "
+             "git repo; implies autonomous mode)",
+    )
+    fractal_analyze_parser.add_argument(
+        "--mode",
+        default=None,
+        choices=["report", "supervised", "autonomous"],
+        help="Execution mode (default: inferred — --commit=autonomous, "
+             "--apply=supervised, else report)",
     )
     fractal_analyze_parser.set_defaults(func=cmd_fractal)
 

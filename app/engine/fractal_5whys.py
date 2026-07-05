@@ -108,6 +108,55 @@ class CounterEvidenceGenerator:
         return counter, rebuttal
 
 
+# Non-security findings whose fix is deterministic and behavior-preserving (a
+# docstring, a test stub), so a high-confidence fractal tree may auto-patch them
+# WITHOUT going through the security severity ladder. Matched as a substring of the
+# finding's ``issue`` (e.g. "missing_docstring", "missing_test"). bare_except is
+# intentionally NOT here — it changes runtime behavior and stays escalate-only.
+_PATCHABLE_NONSECURITY_ISSUES: tuple[str, ...] = ("missing_docstring", "missing_test")
+
+# Issues that must NEVER auto-patch — even if some scanner tags them "critical" —
+# because their fix changes runtime behavior and warrants human review. Checked by
+# the security-severity patch branch too, so the guarantee is structural (not a
+# side effect of bare_except merely happening to be severity="medium" today).
+_NEVER_AUTOPATCH_ISSUES: tuple[str, ...] = ("bare except", "bare_except")
+
+
+def _recommend_action(finding_meta: dict[str, Any], aggregate: float) -> tuple[str, str]:
+    """Map a finding + its aggregate tree confidence to ``(action, rationale)``.
+
+    Non-security, deterministically-generatable findings (missing docstrings /
+    tests) reach ``patch`` on their OWN terms — independent of the security
+    severity ladder (they are severity="low" by design, and inflating that would
+    corrupt the security scorer). A behavior-changing issue (bare_except) NEVER
+    auto-patches, even if tagged critical, and a finding with no concrete file is
+    never patchable (the generator has nothing to read)."""
+    issue = finding_meta.get("issue", "").lower()
+    severity = finding_meta.get("severity", "info")
+    file_ok = bool(str(finding_meta.get("file", "")).strip())
+    never_patch = any(k in issue for k in _NEVER_AUTOPATCH_ISSUES)
+
+    if (file_ok and not never_patch
+            and any(k in issue for k in _PATCHABLE_NONSECURITY_ISSUES)
+            and aggregate > 0.6):
+        return "patch", (
+            "High-confidence documentation/coverage finding. Deterministic, "
+            "behavior-preserving auto-patch (docstring / test stub) recommended.")
+    if severity == "critical" and aggregate > 0.7 and not never_patch:
+        return "patch", (
+            "High-confidence critical finding with deep root-cause analysis. "
+            "Auto-patch recommended.")
+    if severity in ("critical", "high") and aggregate > 0.5:
+        return "review", (
+            "Significant finding with moderate confidence. Human review required "
+            "before patch.")
+    if aggregate < 0.3:
+        return "ignore", (
+            "Low aggregate confidence. Likely false positive or insufficient evidence.")
+    return "escalate", (
+        "Complex finding with mixed signals. Escalate to senior engineer.")
+
+
 class Fractal5WhysEngine:
     """Recursively ask 'Why?' up to N levels deep for every finding.
 
@@ -302,22 +351,7 @@ class Fractal5WhysEngine:
         depth_penalty = 1.0 if max_level >= self.max_depth else 0.8
         aggregate = avg_conf * depth_penalty
 
-        # Determine action
-        tree.metadata.get("finding", {}).get("issue", "").lower()
-        severity = tree.metadata.get("finding", {}).get("severity", "info")
-
-        if severity == "critical" and aggregate > 0.7:
-            action = "patch"
-            rationale = "High-confidence critical finding with deep root-cause analysis. Auto-patch recommended."
-        elif severity in ("critical", "high") and aggregate > 0.5:
-            action = "review"
-            rationale = "Significant finding with moderate confidence. Human review required before patch."
-        elif aggregate < 0.3:
-            action = "ignore"
-            rationale = "Low aggregate confidence. Likely false positive or insufficient evidence."
-        else:
-            action = "escalate"
-            rationale = "Complex finding with mixed signals. Escalate to senior engineer."
+        action, rationale = _recommend_action(tree.metadata.get("finding", {}), aggregate)
 
         insights = [
             f"Tree depth: {max_level}/{self.max_depth}",

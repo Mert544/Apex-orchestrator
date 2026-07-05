@@ -106,13 +106,20 @@ class BaseFractalAgent(RecursiveAgent):
     def _execute(
         self, project_root: str = ".", max_depth: int = 5, **kwargs: Any
     ) -> dict[str, Any]:
+        # Scope the CWD-relative collaborators to the TARGET, so a --target run's
+        # decision cache and cross-run memory can't be poisoned by (or leak into)
+        # the invoking process's CWD — the same rebind _apply_patches does for the
+        # executor/committer, but earlier since these are read/written before it.
+        self.cache = FractalCache(
+            cache_dir=str(Path(project_root) / ".apex" / "fractal_cache"))
+        self.cross_run = FractalCrossRunBridge(project_root)
         scan_result = self._scan(project_root, **kwargs)
         findings = scan_result.get("findings", [])
 
         budget = min(len(findings), self.max_fractal_budget)
         targets = findings[:budget]
 
-        decisions = self._decide_batch(targets)
+        decisions = self._decide_batch(targets, project_root=project_root)
         action_results, commit_results = self._apply_patches(decisions, project_root)
 
         # Phase 3: Reflection
@@ -164,6 +171,11 @@ class BaseFractalAgent(RecursiveAgent):
             return [], []
         permissions = self.mode_policy.permissions
         self.executor = ActionExecutor(project_root)
+        # Rebind the committer to the TARGET project too (mirrors self.executor) —
+        # it was bound to "." at construction, so without this a --commit run would
+        # commit into the invoking process's repo, not the target. Proof-carrying
+        # identity: a fix must land AND commit in the project it was verified against.
+        self.git_commit = GitAutoCommit(project_root)
         gates = SafetyGates(
             project_root=project_root,
             max_changed_files=permissions.max_changed_files,
@@ -289,21 +301,20 @@ class BaseFractalAgent(RecursiveAgent):
             normalized["issue"] = normalized["risk_type"]
         return normalized
 
-    def _decide_one(self, finding: dict[str, Any], max_depth: int) -> CortexDecision:
+    def _decide_one(self, finding: dict[str, Any], max_depth: int,
+                    project_root: str = ".") -> CortexDecision:
         """Brain decides action for a single finding (pure reasoning, no side effects)."""
         finding = self._normalize_finding(finding)
         cached = self.cache.get(finding)
         if cached:
-            # Reconstruct decision from cached tree
+            # Reconstruct decision from cached tree — reuse the SAME semantic-first
+            # patch logic decide() uses (project_root aware), so a cache hit lands
+            # the identical correct patch a fresh analysis would, not the fractal
+            # template fallback.
             meta = self.cortex.engine.meta_analyze(cached)
             patches = []
             if meta.recommended_action == "patch":
-                patches = [
-                    p.to_dict()
-                    for p in self.cortex.fractal_patch_generator.generate(
-                        finding, meta.to_dict()
-                    )
-                ]
+                patches, _ = self.cortex.build_patches(finding, meta, project_root)
             return CortexDecision(
                 finding=finding,
                 fractal_tree=cached.to_dict(),
@@ -314,7 +325,7 @@ class BaseFractalAgent(RecursiveAgent):
             )
 
         # Fresh analysis via Cortex
-        decision = self.cortex.decide(finding)
+        decision = self.cortex.decide(finding, project_root)
         # Broadcast fractal analysis complete
         if self.bus:
             self.bus.broadcast(
@@ -338,17 +349,19 @@ class BaseFractalAgent(RecursiveAgent):
         return decision
 
     def _decide_batch(
-        self, findings: list[dict[str, Any]], max_depth: int = 5
+        self, findings: list[dict[str, Any]], max_depth: int = 5,
+        project_root: str = ".",
     ) -> list[CortexDecision]:
         """Brain decides for multiple findings."""
         if self.parallel and len(findings) > 1:
             workers = min(self.max_workers, len(findings))
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 futures = [
-                    pool.submit(self._decide_one, f, max_depth) for f in findings
+                    pool.submit(self._decide_one, f, max_depth, project_root)
+                    for f in findings
                 ]
                 return [f.result() for f in futures]
-        return [self._decide_one(f, max_depth) for f in findings]
+        return [self._decide_one(f, max_depth, project_root) for f in findings]
 
     def _rebuild_tree(self, data: dict[str, Any]) -> FractalNode:
         """Rebuild FractalNode from dict (for caching)."""

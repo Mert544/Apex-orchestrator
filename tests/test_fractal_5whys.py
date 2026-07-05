@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import pytest
 
 from app.engine.fractal_5whys import Fractal5WhysEngine, FractalNode
 
@@ -99,6 +98,39 @@ class TestFractal5WhysEngine:
         tree = engine.analyze(finding)
         meta = engine.meta_analyze(tree)
         assert meta.recommended_action in ("ignore", "escalate", "review")
+
+    def test_docstring_and_test_findings_reach_patch_on_own_terms(self):
+        # Non-security, behavior-preserving findings (severity="low") reach "patch"
+        # via the dedicated non-security condition — the security severity ladder
+        # structurally never fires for them.
+        engine = Fractal5WhysEngine(max_depth=5)
+        for issue in ("missing_docstring", "missing_test"):
+            finding = {"issue": issue, "file": "x.py", "line": 1, "severity": "low"}
+            meta = engine.meta_analyze(engine.analyze(finding))
+            assert meta.recommended_action == "patch", issue
+
+    def test_bare_except_stays_escalate_not_patch(self):
+        # bare_except changes runtime behavior — deliberately NOT auto-patched here,
+        # even though its aggregate confidence would clear the doc/test bar.
+        engine = Fractal5WhysEngine(max_depth=5)
+        finding = {"issue": "bare except", "file": "x.py", "line": 1, "severity": "medium"}
+        meta = engine.meta_analyze(engine.analyze(finding))
+        assert meta.recommended_action != "patch"
+
+    def test_bare_except_never_patches_even_if_tagged_critical(self):
+        # The exemption is STRUCTURAL (a deny-list), not a side effect of
+        # bare_except merely being severity="medium" today.
+        engine = Fractal5WhysEngine(max_depth=5)
+        finding = {"issue": "bare except", "file": "x.py", "line": 1, "severity": "critical"}
+        meta = engine.meta_analyze(engine.analyze(finding))
+        assert meta.recommended_action != "patch"
+
+    def test_docstring_finding_with_no_file_never_patches(self):
+        # A finding with no concrete file can't be patched (nothing to read).
+        engine = Fractal5WhysEngine(max_depth=5)
+        finding = {"issue": "missing_docstring", "file": "", "line": 1, "severity": "low"}
+        meta = engine.meta_analyze(engine.analyze(finding))
+        assert meta.recommended_action != "patch"
 
     def test_counter_evidence_generator(self):
         from app.engine.fractal_5whys import CounterEvidenceGenerator

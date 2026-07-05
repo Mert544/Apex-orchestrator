@@ -111,7 +111,7 @@ class ModePolicy:
     def can_commit(self) -> bool:
         return self.permissions.can_commit
 
-    def enforce_clean_working_tree(self) -> SafetyGateResult:
+    def enforce_clean_working_tree(self, project_root: str | None = None) -> SafetyGateResult:
         import subprocess
 
         try:
@@ -120,7 +120,21 @@ class ModePolicy:
                 capture_output=True,
                 text=True,
                 timeout=10,
+                # Check the TARGET project's tree, not the invoking process's CWD —
+                # otherwise the gate is meaningless for `--target <other repo>`.
+                cwd=project_root,
             )
+            if getattr(result, "returncode", 0) != 0:
+                # Non-zero = not a git repository (or a git error). git writes that
+                # to STDERR, so an empty stdout must NOT be read as "clean" — block,
+                # or --commit would proceed and then falsely report a commit.
+                detail = getattr(result, "stderr", "").strip() or "git error"
+                return SafetyGateResult(
+                    name="clean_working_tree",
+                    passed=False,
+                    message=f"Target is not a git repository: {detail}",
+                    blocked=True,
+                )
             if result.stdout.strip():
                 return SafetyGateResult(
                     name="clean_working_tree",
