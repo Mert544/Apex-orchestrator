@@ -17,6 +17,8 @@ propose. Zero-token, offline.
 
 from __future__ import annotations
 
+import os
+from contextlib import contextmanager
 from pathlib import Path
 
 from app.engine.native_synth import adapt_expr_to_params, learn_return_exemplars
@@ -25,6 +27,8 @@ from app.execution.stub_synthesis import _native_mind_sources
 __all__ = [
     "summarize_native_mind",
     "render_native_mind_markdown",
+    "finishable_stubs",
+    "render_finishable_stubs_markdown",
 ]
 
 
@@ -104,4 +108,109 @@ def render_native_mind_markdown(summary: dict) -> str:
             lines.append(
                 f"- `{row['shape']}` — **{row['count']}**× "
                 f"(arity {row['arity']}, e.g. `{row['example']}`)")
+    return "\n".join(lines) + "\n"
+
+
+@contextmanager
+def _lane(enabled: bool):
+    """Force the ``APEX_NATIVE_MIND`` lane on/off for the duration, restoring the
+    prior environment afterwards (even on error) — so a dry-run never leaks the
+    toggle into the caller's process."""
+    key = "APEX_NATIVE_MIND"
+    prior = os.environ.get(key)
+    os.environ[key] = "1" if enabled else "0"
+    try:
+        yield
+    finally:
+        if prior is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = prior
+
+
+def finishable_stubs(root: str | Path, limit: int = 200) -> list[dict]:
+    """The project's OWN unfinished stubs the native intelligence could finish —
+    a dry-run of the concrete capability, no writes.
+
+    For every own module, each stub whose contract is pinned by tests is probed
+    twice: once with the lane OFF (fixed templates only) and once ON (templates +
+    project-learned bodies). A stub the ON pass can finish is reported, flagged
+    ``native_only`` when the OFF pass could NOT — i.e. a body only the native
+    intelligence supplies, learned from the project's own code. Every proposal is
+    gate-checked in-process (``synthesize_expr_from_witnesses``), so a reported
+    body genuinely satisfies the stub's pinned witnesses (never a fake-green).
+
+    Deterministic (own modules and stubs in fixed order); bounded by ``limit`` so a
+    huge repo cannot make the dry-run unbounded. Returns ``[{module, stub, params,
+    body, native_only}]`` sorted by (module, stub)."""
+    from app.engine.objective_compiler import _own_modules
+    from app.execution.stub_synthesis import (
+        find_stub_functions,
+        pinned_test_files,
+        synthesize_expr_from_witnesses,
+    )
+
+    root = Path(root)
+    probes: list[tuple[str, object, list[str]]] = []
+    for rel, src in _own_modules(root):
+        for stub in find_stub_functions(src):
+            tests = pinned_test_files(root, rel, stub.name)
+            if tests:
+                probes.append((rel, stub, tests))
+            if len(probes) >= limit:
+                break
+        if len(probes) >= limit:
+            break
+
+    def _synth(enabled: bool) -> dict[tuple[str, str], str | None]:
+        out: dict[tuple[str, str], str | None] = {}
+        with _lane(enabled):
+            _native_mind_sources.cache_clear()
+            for rel, stub, tests in probes:
+                out[(rel, stub.name)] = synthesize_expr_from_witnesses(
+                    root, tests, stub)
+        _native_mind_sources.cache_clear()
+        return out
+
+    off = _synth(False)
+    on = _synth(True)
+    results = []
+    for rel, stub, _tests in probes:
+        body = on[(rel, stub.name)]
+        if body is None:
+            continue
+        results.append({
+            "module": rel, "stub": stub.name, "params": list(stub.params),
+            "body": body, "native_only": off[(rel, stub.name)] is None,
+        })
+    return sorted(results, key=lambda r: (r["module"], r["stub"]))
+
+
+def render_finishable_stubs_markdown(rows: list[dict]) -> str:
+    """Render :func:`finishable_stubs` as markdown, foregrounding the NATIVE-ONLY
+    wins (stubs no fixed template could finish) — the concrete "what Apex can do
+    for you from your own code" surface."""
+    native = [r for r in rows if r["native_only"]]
+    lines = ["# Stubs the native intelligence can finish", ""]
+    if not rows:
+        lines.append(
+            "No pinned, unfinished stub in this project is finishable right now "
+            "(nothing to demonstrate — a fully-implemented or untested codebase).")
+        return "\n".join(lines) + "\n"
+    lines.append(
+        f"Apex can finish **{len(rows)}** pinned stub(s) here; **{len(native)}** "
+        "of them ONLY via a body learned from your own code (no fixed template "
+        "fits). Run `APEX_NATIVE_MIND=1 apex develop --objective implement-stub "
+        "--apply` to land them — each verified by the never-fake-green gate.")
+    if native:
+        lines += ["", "## Native-only (learned from your code)", ""]
+        for r in native:
+            params = ", ".join(r["params"])
+            lines.append(
+                f"- `{r['module']}` :: `{r['stub']}({params})` → `{r['body']}`")
+    template = [r for r in rows if not r["native_only"]]
+    if template:
+        lines += ["", f"## Also finishable by a fixed template ({len(template)})", ""]
+        for r in template:
+            lines.append(f"- `{r['module']}` :: `{r['stub']}` → `{r['body']}`")
     return "\n".join(lines) + "\n"

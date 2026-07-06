@@ -582,11 +582,22 @@ def cmd_native_mind(args: argparse.Namespace) -> int:
     reads the same corpus the opt-in ``APEX_NATIVE_MIND`` lane learns from, so the
     report reflects exactly what Apex could transplant onto an unfinished stub."""
     from app.reporting.native_mind_report import (
+        finishable_stubs,
+        render_finishable_stubs_markdown,
         render_native_mind_markdown,
         summarize_native_mind,
     )
 
     target = Path(args.target).resolve() if args.target else _get_project_root()
+    if getattr(args, "stubs", False):
+        rows = finishable_stubs(target)
+        if getattr(args, "json", False):
+            print(json.dumps({"finishable": rows,
+                              "native_only": sum(r["native_only"] for r in rows)},
+                             indent=2))
+            return 0
+        print(render_finishable_stubs_markdown(rows), end="")
+        return 0
     summary = summarize_native_mind(target, top=getattr(args, "top", 20))
     if getattr(args, "json", False):
         print(json.dumps(summary, indent=2))
@@ -1690,6 +1701,10 @@ def register_parsers(subparsers) -> None:
     native_mind_parser.add_argument("--target", default="", help="Target project root")
     native_mind_parser.add_argument("--top", type=int, default=20,
                                     help="How many dominant idioms to show (default 20)")
+    native_mind_parser.add_argument(
+        "--stubs", action="store_true",
+        help="Dry-run: which of THIS project's unfinished stubs the native lane "
+             "could finish (flagging the native-only wins), no writes")
     native_mind_parser.add_argument("--json", action="store_true", help="Emit JSON")
     native_mind_parser.set_defaults(func=cmd_native_mind)
 
