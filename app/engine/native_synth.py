@@ -71,16 +71,22 @@ def _positional_params(node: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[st
     return tuple(names)
 
 
+def _strip_docstring(body: list[ast.stmt]) -> list[ast.stmt]:
+    """``body`` without a leading docstring statement (a bare string ``Expr``),
+    so the return-shape extractors below see only the executable statements."""
+    if body and isinstance(body[0], ast.Expr) and isinstance(
+            getattr(body[0], "value", None), ast.Constant) and isinstance(
+            body[0].value.value, str):
+        return body[1:]
+    return body
+
+
 def _single_return_expr(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None:
     """The source of the function's return expression when its body is exactly a
     (optional docstring then a) single ``return <expr>`` — the shape a learned
     candidate can reuse. ``None`` for anything else (multi-statement bodies, a
     bare ``return``, ``yield``, etc.)."""
-    body = list(node.body)
-    if body and isinstance(body[0], ast.Expr) and isinstance(
-            getattr(body[0], "value", None), ast.Constant) and isinstance(
-            body[0].value.value, str):
-        body = body[1:]  # drop a leading docstring
+    body = _strip_docstring(list(node.body))
     if len(body) != 1 or not isinstance(body[0], ast.Return) or body[0].value is None:
         return None
     try:
@@ -89,14 +95,68 @@ def _single_return_expr(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str | N
         return None
 
 
+def _sole_return_value(stmts: list[ast.stmt]) -> ast.expr | None:
+    """The returned expression when ``stmts`` is exactly one ``return <expr>``
+    (never a bare ``return``), else ``None`` — the branch shape a guarded return
+    is built from."""
+    if (len(stmts) == 1 and isinstance(stmts[0], ast.Return)
+            and stmts[0].value is not None):
+        return stmts[0].value
+    return None
+
+
+def _guarded_return_expr(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None:
+    """The equivalent ternary source for a two-branch GUARDED-return body — the
+    next-most-common finishable shape after a plain single return:
+
+    * ``if T: return A`` then ``return B``  (a guard with a trailing fallthrough)
+    * ``if T: return A`` ``else: return B`` (an if/else where both branches return)
+
+    both collapse to ``A if T else B``, a single expression the native
+    intelligence can transplant exactly like a plain return (positional param
+    remap, same-arity, same never-fake-green gate). ``None`` for any richer body
+    (elif chains, statements around the branch, a bare ``return`` in a branch)."""
+    body = _strip_docstring(list(node.body))
+    if not body or not isinstance(body[0], ast.If):
+        return None
+    guard = body[0]
+    a = _sole_return_value(guard.body)
+    if a is None:
+        return None
+    b = _guarded_fallthrough_value(guard, body)
+    if b is None:
+        return None
+    try:
+        return ast.unparse(ast.IfExp(test=guard.test, body=a, orelse=b))
+    except Exception:
+        return None
+
+
+def _guarded_fallthrough_value(guard: ast.If, body: list[ast.stmt]) -> ast.expr | None:
+    """The ``B`` (else value) of a guarded return: the trailing ``return B`` when
+    the guard has no ``else`` (shape 1), or the sole ``return B`` in the guard's
+    ``else`` when there is nothing after the ``if`` (shape 2). ``None`` for any
+    other arrangement, so only the two clean two-branch shapes are learned."""
+    if not guard.orelse and len(body) == 2:
+        tail = body[1]
+        if isinstance(tail, ast.Return) and tail.value is not None:
+            return tail.value
+        return None
+    if guard.orelse and len(body) == 1:
+        return _sole_return_value(guard.orelse)
+    return None
+
+
 def learn_return_exemplars(sources: list[str]) -> list[ReturnExemplar]:
     """Mine every ``return <expr>`` body from ``sources`` (the project's own code)
     into a deterministic, de-duplicated, sorted library of candidate bodies.
 
     A function contributes an exemplar only when it has simple positional params
-    and a single-return body AND the return expression references ONLY those
-    params (a self-contained rule the native intelligence can safely transplant to
-    another function of the same arity — no free names, no globals)."""
+    and a finishable body — a single ``return <expr>`` OR a two-branch guarded
+    return (``if T: return A; return B`` -> ``A if T else B``) — AND the resulting
+    expression references ONLY those params (a self-contained rule the native
+    intelligence can safely transplant to another function of the same arity — no
+    free names, no globals)."""
     seen: set[ReturnExemplar] = set()
     for source in sources:
         try:
@@ -109,7 +169,7 @@ def learn_return_exemplars(sources: list[str]) -> list[ReturnExemplar]:
             params = _positional_params(node)
             if not params:
                 continue
-            expr = _single_return_expr(node)
+            expr = _single_return_expr(node) or _guarded_return_expr(node)
             if expr is None:
                 continue
             if not _expr_uses_only(expr, set(params)):
@@ -179,16 +239,24 @@ def mind_candidate_exprs(sources: list[str],
     the honest provenance ``native-mind:<exemplar>`` so a landed body is never
     passed off as a hand-written template.
 
-    These are *proposals only* — the caller runs each through
-    ``stub_synthesis``'s never-fake-green gate and lands the first that verifies."""
-    out: list[tuple[str, str]] = []
-    emitted: set[str] = set()
-    for ex in learn_return_exemplars(sources):
+    Ranked by a learned PRIOR from the project's own code: a body shape exhibited
+    by MORE of the project's functions (after adaptation to the stub params) is the
+    dominant idiom here, so it is proposed FIRST — the native intelligence prefers
+    the pattern the codebase itself uses most, then breaks ties by the stable
+    exemplar order. This only reorders *proposals*; correctness is unchanged
+    because the caller still runs each through ``stub_synthesis``'s never-fake-green
+    gate and lands the first that verifies (a wrong-but-frequent shape is refused,
+    a right-but-rare one still gets its turn)."""
+    frequency: dict[str, int] = {}
+    first: dict[str, tuple[int, str]] = {}
+    for index, ex in enumerate(learn_return_exemplars(sources)):
         if len(ex.params) != len(stub_params):
             continue
         adapted = adapt_expr_to_params(ex.params, ex.expr, stub_params)
-        if adapted is None or adapted in emitted:
+        if adapted is None:
             continue
-        emitted.add(adapted)
-        out.append((f"native-mind:{ex.name}", adapted))
-    return out
+        frequency[adapted] = frequency.get(adapted, 0) + 1
+        if adapted not in first:
+            first[adapted] = (index, f"native-mind:{ex.name}")
+    ranked = sorted(first, key=lambda expr: (-frequency[expr], first[expr][0]))
+    return [(first[expr][1], expr) for expr in ranked]
