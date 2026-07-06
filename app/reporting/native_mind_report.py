@@ -21,7 +21,7 @@ import os
 from contextlib import contextmanager
 from pathlib import Path
 
-from app.engine.native_synth import adapt_expr_to_params, learn_return_exemplars
+from app.engine.native_synth import _positional_body, learn_return_exemplars
 from app.execution.stub_synthesis import _native_mind_sources
 
 __all__ = [
@@ -37,10 +37,14 @@ def _canonical_shape(params: tuple[str, ...], expr: str) -> str:
     """The exemplar's return expression with its params renamed to positional
     placeholders ``p0, p1, …`` — so ``a + b`` (learned from ``add(a, b)``) and
     ``m + n`` (from ``plus(m, n)``) collapse to the SAME idiom ``p0 + p1``. This is
-    the grouping key that turns a raw exemplar list into "the project's idioms"."""
-    canon = tuple(f"p{i}" for i in range(len(params)))
-    adapted = adapt_expr_to_params(params, expr, canon)
-    return adapted if adapted is not None else expr
+    the grouping key that turns a raw exemplar list into "the project's idioms".
+
+    Delegates to :func:`app.engine.native_synth._positional_body` — the ONE
+    positional canonicaliser — so the report groups idioms by ARGUMENT POSITION
+    exactly as the experience memory keys them, and an idiom whose params are
+    spelled ``p0``/``p1`` can never be mis-grouped (it is renamed by position,
+    never spliced verbatim by the name-aware adaptation rule)."""
+    return _positional_body(params, expr)
 
 
 def summarize_native_mind(root: str | Path, top: int = 20) -> dict:

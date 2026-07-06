@@ -43,12 +43,14 @@ def canonical_shape(params: tuple[str, ...], expr: str) -> str:
     2-arg ``a + b`` (``2:p0 + p1``) and a 3-arg ``a + b`` that ignores its third
     param (``3:p0 + p1``) are distinct idioms, so their experience never
     cross-contaminates. The key the experience memory scores by; deterministic.
-    Falls back to the raw ``expr`` (still arity-prefixed) when the remap can't
-    apply (already placeholder-shaped, or an arity the adapter declines)."""
-    canon = tuple(f"p{i}" for i in range(len(params)))
-    adapted = adapt_expr_to_params(params, expr, canon)
-    body = adapted if adapted is not None else expr
-    return f"{len(params)}:{body}"
+
+    Canonicalisation is POSITIONAL (via :func:`_positional_body`), NOT the
+    name-aware stub-adaptation rule: an idiom whose params are literally spelled
+    ``p0``/``p1`` (plausible in point/geometry code) is still keyed by argument
+    POSITION — ``(p1, p0)`` returning ``p0 - p1`` is "second - first" and keys to
+    ``2:p1 - p0`` — so it never collides with a genuine ``2:p0 - p1`` ("first -
+    second"), which would silently corrupt the decay memory."""
+    return f"{len(params)}:{_positional_body(params, expr)}"
 
 
 class ReturnExemplar:
@@ -497,17 +499,50 @@ _SAFE_BUILTINS: frozenset[str] = frozenset({
 })
 
 
-def adapt_expr_to_params(exemplar_params: tuple[str, ...], expr: str,
-                         stub_params: tuple[str, ...]) -> str | None:
-    """Re-point ``expr`` from ``exemplar_params`` onto ``stub_params`` positionally
-    (``a+b`` learned from ``(a, b)`` becomes ``x+y`` for a stub ``(x, y)``), or
-    ``None`` when the arities differ. Deterministic AST rewrite — a param Name is
-    substituted only in a Load context, so nothing else in the expression moves."""
-    if len(exemplar_params) != len(stub_params):
+def _param_mapping(exemplar_params: tuple[str, ...],
+                   stub_params: tuple[str, ...]) -> dict[str, str] | None:
+    """The exemplar-param -> stub-param NAME mapping :func:`adapt_expr_to_params`
+    substitutes by. Deterministic, unambiguous, and never a guess:
+
+    * ``len(exemplar_params) > len(stub_params)`` -> ``None`` (the exemplar needs
+      more params than the stub has — cannot fit, full stop).
+    * SAME arity, and every exemplar param name is present in ``stub_params`` (a
+      set membership, names distinct) -> NAME-AWARE: each exemplar param maps to
+      ITSELF (the stub's own same-named param) — correct even when the stub
+      reuses the exemplar's exact names in a DIFFERENT order (a non-commutative
+      idiom like ``a - b`` transplanted onto a stub ``(b, a)`` must stay
+      ``a - b``, not become ``b - a``).
+    * SAME arity, NOT every exemplar name present in the stub -> POSITIONAL
+      (``zip`` in order) — byte-identical to the original, position-only rule.
+    * exemplar arity < stub arity AND the exemplar's names are a DISTINCT SUBSET
+      of the stub's names -> each exemplar param maps to itself, same as the
+      name-aware case above (the exemplar's body only ever reads its own
+      params, so the stub's extra params are simply left unused).
+    * exemplar arity < stub arity with NO such subset relationship -> ``None``
+      (no shared names to align by — refuse rather than guess which stub
+      param each exemplar param means)."""
+    if len(exemplar_params) > len(stub_params):
         return None
-    mapping = dict(zip(exemplar_params, stub_params))
+    stub_names = set(stub_params)
+    if len(exemplar_params) == len(stub_params):
+        if set(exemplar_params) <= stub_names:
+            return {p: p for p in exemplar_params}
+        return dict(zip(exemplar_params, stub_params))
+    if set(exemplar_params) <= stub_names:
+        return {p: p for p in exemplar_params}
+    return None
+
+
+def _rename_names(expr: str, mapping: dict[str, str]) -> str | None:
+    """``expr`` with every LOADED ``Name`` substituted per ``mapping`` (old -> new
+    name), unparsed — or ``None`` when ``expr`` doesn't parse as an expression. An
+    identity mapping (every ``k == v``) returns ``expr`` verbatim; only
+    Load-context Names move, so nothing else in the tree changes. The shared
+    rewrite engine behind BOTH the name/positional stub adaptation
+    (:func:`adapt_expr_to_params`) and the positional canonicalisation
+    (:func:`_positional_body`)."""
     if all(k == v for k, v in mapping.items()):
-        return expr  # identical names — no rewrite needed
+        return expr
     try:
         tree = ast.parse(expr, mode="eval")
     except (SyntaxError, ValueError):
@@ -524,6 +559,36 @@ def adapt_expr_to_params(exemplar_params: tuple[str, ...], expr: str,
         return ast.unparse(_Remap().visit(tree))
     except Exception:
         return None
+
+
+def _positional_body(params: tuple[str, ...], expr: str) -> str:
+    """``expr`` with each param renamed to its POSITIONAL placeholder ``p{i}`` (the
+    param at index ``i`` -> ``p{i}``), ALWAYS by position — never the name-aware
+    stub-adaptation rule. The canonicalisation primitive shared by
+    :func:`canonical_shape` and the native-mind report, so an idiom whose params
+    are literally spelled ``p0``/``p1`` is still keyed by ARGUMENT POSITION and
+    two idioms computing different things can never collide on one key. Falls
+    back to the raw ``expr`` only when it doesn't parse (never in practice for a
+    learned exemplar)."""
+    canon = tuple(f"p{i}" for i in range(len(params)))
+    adapted = _rename_names(expr, dict(zip(params, canon)))
+    return adapted if adapted is not None else expr
+
+
+def adapt_expr_to_params(exemplar_params: tuple[str, ...], expr: str,
+                         stub_params: tuple[str, ...]) -> str | None:
+    """Re-point ``expr`` from ``exemplar_params`` onto ``stub_params`` — by NAME
+    when the stub reuses the exemplar's own param names (same arity in a
+    different order, or a distinct subset for a WIDER stub), else positionally
+    (``a+b`` learned from ``(a, b)`` becomes ``x+y`` for a stub ``(x, y)``); see
+    :func:`_param_mapping` for the exact rule table. ``None`` when the exemplar
+    can't be placed at all (too many params, or no shared names to align a
+    wider stub by). Deterministic AST rewrite — a param Name is substituted only
+    in a Load context, so nothing else in the expression moves."""
+    mapping = _param_mapping(exemplar_params, stub_params)
+    if mapping is None:
+        return None
+    return _rename_names(expr, mapping)
 
 
 def _body_calls_a_shadowed_builtin(expr: str, exemplar_params: tuple[str, ...],
@@ -554,6 +619,13 @@ def mind_candidate_exprs(sources: list[str],
     the honest provenance ``native-mind:<exemplar>`` so a landed body is never
     passed off as a hand-written template.
 
+    An exemplar of the SAME arity as the stub adapts by name or position (see
+    :func:`_param_mapping`); one of a SMALLER arity also adapts when its own
+    param names are a distinct subset of the stub's (a 2-arg idiom can finish a
+    wider stub whose signature reuses those exact names) — anything
+    :func:`adapt_expr_to_params` can't unambiguously place (a bigger exemplar, or
+    a smaller one with no shared names) is skipped, never guessed at.
+
     Ranked by a learned PRIOR from the project's own code: a body shape exhibited
     by MORE of the project's functions (after adaptation to the stub params) is the
     dominant idiom here, so it is proposed FIRST — the native intelligence prefers
@@ -566,7 +638,7 @@ def mind_candidate_exprs(sources: list[str],
     frequency: dict[str, int] = {}
     first: dict[str, tuple[int, str]] = {}
     for index, ex in enumerate(learn_return_exemplars(sources)):
-        if len(ex.params) != len(stub_params):
+        if len(ex.params) > len(stub_params):
             continue
         if shadowed and _body_calls_a_shadowed_builtin(ex.expr, ex.params, shadowed):
             continue  # a stub param is named after a builtin the body uses
