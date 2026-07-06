@@ -152,7 +152,9 @@ def finishable_stubs(root: str | Path, limit: int = 200) -> list[dict]:
 
     root = Path(root)
     probes: list[tuple[str, object, list[str]]] = []
-    for rel, src in _own_modules(root):
+    # Sort modules before probing so the ``limit`` boundary keeps the SAME stubs
+    # regardless of the source index's iteration order (determinism at the cap).
+    for rel, src in sorted(_own_modules(root)):
         for stub in find_stub_functions(src):
             tests = pinned_test_files(root, rel, stub.name)
             if tests:
