@@ -449,26 +449,122 @@ def learn_return_exemplars(sources: list[str]) -> list[ReturnExemplar]:
 
 
 # Binding/scoping/suspension constructs a transplanted body must NOT contain: a
-# walrus (``:=``) or a lambda/comprehension binds a name the plain Name-load check
-# below does not see as "free", so an unclean body (``[a for _ in a]``,
-# ``(z := a)``) could slip through; a ``yield``/``yield from``/``await`` turns the
-# spliced function into a generator/coroutine (a different return protocol
-# entirely — ``(yield a)`` parses in ``mode="eval"`` on some CPythons, so the
-# Name-load scan alone would pass it). A transplantable body is a pure,
-# binding-free, non-suspending expression, so any of these disqualifies it outright.
+# walrus (``:=``) or a lambda binds a name the plain Name-load check below does
+# not see as "free", so an unclean body (``(z := a)``, ``lambda: a``) could slip
+# through; a ``yield``/``yield from``/``await`` turns the spliced function into a
+# generator/coroutine (a different return protocol entirely — ``(yield a)``
+# parses in ``mode="eval"`` on some CPythons, so the Name-load scan alone would
+# pass it). Comprehensions/generator expressions are deliberately NOT here — a
+# comprehension's own loop-var names are SCOPE-tracked instead (see
+# :func:`_comprehension_bound_names`), so a self-contained comprehension body
+# (``[x * 2 for x in a]``) is learnable while a free global inside one
+# (``[g(x) for x in a]``) still isn't. A transplantable body is a pure,
+# non-suspending expression whose only names are its own params, safe builtins,
+# and its own comprehension loop vars — any of these REMAINING constructs
+# disqualifies it outright.
 _BINDING_NODES: tuple[type[ast.AST], ...] = (
-    ast.NamedExpr, ast.Lambda, ast.ListComp, ast.SetComp, ast.DictComp,
-    ast.GeneratorExp, ast.Yield, ast.YieldFrom, ast.Await,
+    ast.NamedExpr, ast.Lambda, ast.Yield, ast.YieldFrom, ast.Await,
+)
+
+# The comprehension/generator node types whose ``generators`` (a list of
+# ``ast.comprehension``) each carry one loop TARGET — the names
+# :func:`_comprehension_bound_names` collects as locally bound.
+_COMPREHENSION_NODES: tuple[type[ast.AST], ...] = (
+    ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp,
 )
 
 
+def _comprehension_target_names(target: ast.expr) -> set[str]:
+    """Every ``Name`` id bound by one comprehension ``target`` — itself for a bare
+    ``Name`` target (``for x in a``), or the union of its elements' names,
+    RECURSIVELY, for a ``Tuple``/``List`` unpacking target (``for k, v in
+    pairs``, or a nested ``for (a, (b, c)) in triples``). Anything else (a
+    subscript/attribute target, which a comprehension's ``for`` clause cannot
+    even syntactically have) binds nothing here."""
+    if isinstance(target, ast.Name):
+        return {target.id}
+    if isinstance(target, ast.Starred):
+        return _comprehension_target_names(target.value)  # ``for a, *rest in …``
+    if isinstance(target, (ast.Tuple, ast.List)):
+        names: set[str] = set()
+        for elt in target.elts:
+            names |= _comprehension_target_names(elt)
+        return names
+    return set()
+
+
+def _comprehension_bound_names(tree: ast.AST) -> set[str]:
+    """Every name bound by ANY comprehension/generator-expression target inside
+    ``tree`` — across all list/set/dict comprehensions and generator
+    expressions, INCLUDING ones nested inside another (``ast.walk`` reaches
+    every comprehension regardless of nesting depth, so no recursion is needed
+    here beyond :func:`_comprehension_target_names`'s own tuple-unpacking walk).
+
+    Mined code is valid Python, so a target name is only ever READ inside its
+    own comprehension; collecting every target name as "locally bound"
+    everywhere it appears in ``tree`` is therefore a safe, deterministic
+    over-approximation for :func:`_expr_uses_only` — it never hides a genuine
+    free name under a different spelling."""
+    bound: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, _COMPREHENSION_NODES):
+            for gen in node.generators:
+                bound |= _comprehension_target_names(gen.target)
+    return bound
+
+
+def _comprehension_free_names(node: ast.AST) -> set[str]:
+    """The FREE names of one comprehension/generator, with CORRECT scoping: its
+    loop targets bind names only WITHIN it. The FIRST generator's iterable is
+    evaluated in the enclosing scope (its free names escape); every other part —
+    the element(s), the ``if`` conditions, and SUBSEQUENT generators' iterables —
+    runs in the comprehension's own scope, so a target name read there is bound,
+    not free (and a later iterable may read an earlier target)."""
+    bound: set[str] = set()
+    free: set[str] = set()
+    for i, gen in enumerate(node.generators):
+        iter_free = _free_names(gen.iter)
+        free |= iter_free if i == 0 else iter_free - bound
+        bound |= _comprehension_target_names(gen.target)
+        for cond in gen.ifs:
+            free |= _free_names(cond) - bound
+    parts = ([node.key, node.value] if isinstance(node, ast.DictComp)
+             else [node.elt])
+    for part in parts:
+        free |= _free_names(part) - bound
+    return free
+
+
+def _free_names(node: ast.AST) -> set[str]:
+    """The set of FREE (unbound) Load-context names in an expression tree, honouring
+    per-comprehension scope (see :func:`_comprehension_free_names`). A Store-context
+    Name (only ever a comprehension target here) contributes nothing. This is the
+    scope-correct replacement for a whole-tree ``bound``/``used`` diff: a name that
+    is a loop target in ONE comprehension but a genuine free reference ELSEWHERE in
+    the same expression is still reported free."""
+    if isinstance(node, ast.Name):
+        return {node.id} if isinstance(node.ctx, ast.Load) else set()
+    if isinstance(node, _COMPREHENSION_NODES):
+        return _comprehension_free_names(node)
+    free: set[str] = set()
+    for child in ast.iter_child_nodes(node):
+        free |= _free_names(child)
+    return free
+
+
 def _expr_uses_only(expr: str, allowed: set[str]) -> bool:
-    """True when ``expr`` is a self-contained, binding-free expression whose every
-    loaded NAME is in ``allowed`` (the params) or the safe-builtins allowlist — so
-    it is safe to transplant. Attribute/method calls on a param (``x.upper()``) are
-    fine; a bare free name (a global/other symbol), OR any binding construct
-    (walrus, lambda, comprehension — which introduce names the Name-load scan
-    cannot vet), disqualifies it."""
+    """True when ``expr`` is a self-contained expression SAFE to transplant: every
+    scope-correct FREE name is in ``allowed`` (the params) or the safe-builtins
+    allowlist. A comprehension over a param (``[x * 2 for x in a]``) is fine — its
+    loop var ``x`` is scope-tracked, not a free name; a bare free name (a global/
+    other symbol) inside OR outside a comprehension, OR any remaining binding
+    construct (walrus, lambda, yield, await), disqualifies it.
+
+    Also refuses a body where a PARAM name is itself a comprehension loop-var
+    (``[s * 2 for s in s]`` on param ``s``): the transplant rename touches every
+    Load of that spelling, including the loop-var reads Python resolves to the
+    comprehension's own scope, which would silently corrupt the adapted body — so
+    such a self-shadowing exemplar is never learned."""
     try:
         tree = ast.parse(expr, mode="eval")
     except (SyntaxError, ValueError):
@@ -476,10 +572,10 @@ def _expr_uses_only(expr: str, allowed: set[str]) -> bool:
     for node in ast.walk(tree):
         if isinstance(node, _BINDING_NODES):
             return False
-        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
-            if node.id not in allowed and node.id not in _SAFE_BUILTINS:
-                return False
-    return True
+    if _comprehension_bound_names(tree) & allowed:
+        return False  # a param shadowed by a loop var is rename-unsafe
+    free = _free_names(tree)
+    return all(name in allowed or name in _SAFE_BUILTINS for name in free)
 
 
 # Builtins a transplanted expression may reference — pure, side-effect-free, and
@@ -611,6 +707,30 @@ def _body_calls_a_shadowed_builtin(expr: str, exemplar_params: tuple[str, ...],
     return False
 
 
+def _body_binds_a_stub_param(expr: str, stub_params: tuple[str, ...]) -> bool:
+    """True when ``expr`` contains a comprehension/generator whose LOOP-VAR name
+    is ALSO one of ``stub_params`` — adapting the exemplar onto that stub would
+    rename the exemplar's OWN param Loads to that same spelling (positionally or
+    by name), but the comprehension's loop-var target is never touched by that
+    rename (it isn't an exemplar param), so the two collide: inside the
+    comprehension the loop var then SHADOWS the freshly-substituted param for
+    every remaining read there, corrupting the adapted expression. E.g. ``a + i
+    for i in a`` (exemplar param ``(a,)``) adapted onto a stub ``(i,)`` would
+    naively become ``i + i for i in i`` — BOTH reads now see the loop var, never
+    the substituted param (should have been ``param_i + loop_i``).
+
+    Checked BEFORE adaptation, exactly like :func:`_body_calls_a_shadowed_builtin`
+    — and just as conservative: it drops the candidate whenever a loop-var name
+    merely COINCIDES with a stub param, even for the (rarer) case where that
+    exact stub param wouldn't actually receive the rename. Dropping a safe case
+    only costs a proposal; a corrupted body must never be proposed."""
+    try:
+        tree = ast.parse(expr, mode="eval")
+    except (SyntaxError, ValueError):
+        return True  # unparseable — drop conservatively
+    return bool(_comprehension_bound_names(tree) & set(stub_params))
+
+
 def mind_candidate_exprs(sources: list[str],
                          stub_params: tuple[str, ...]) -> list[tuple[str, str]]:
     """The native intelligence's ranked ``(label, return_expr)`` candidates for a
@@ -642,6 +762,8 @@ def mind_candidate_exprs(sources: list[str],
             continue
         if shadowed and _body_calls_a_shadowed_builtin(ex.expr, ex.params, shadowed):
             continue  # a stub param is named after a builtin the body uses
+        if _body_binds_a_stub_param(ex.expr, stub_params):
+            continue  # a stub param collides with a comprehension loop-var name
         adapted = adapt_expr_to_params(ex.params, ex.expr, stub_params)
         if adapted is None:
             continue

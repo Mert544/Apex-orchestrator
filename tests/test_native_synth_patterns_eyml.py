@@ -150,12 +150,18 @@ def test_param_order_tie_has_a_total_stable_order():
 
 
 def test_binding_constructs_are_never_learned():
-    # A walrus, a lambda, or a comprehension introduces a bound name the plain
-    # Name-load check cannot vet — a transplantable body must be a pure,
-    # binding-free expression, so each of these is declined outright.
+    # A walrus or a lambda introduces a bound name the plain Name-load check
+    # cannot vet — declined outright. A comprehension is different: its OWN
+    # loop-var is scope-tracked (see
+    # tests/test_native_synth_comprehensions_eyml.py for the full pattern
+    # space), so a SELF-CONTAINED comprehension over only its param is now
+    # correctly learned, while one that still reads a free name stays declined.
     assert learn_return_exemplars(["def w(a):\n    return (z := a)\n"]) == []
     assert learn_return_exemplars(["def l(a):\n    return lambda: a\n"]) == []
-    assert learn_return_exemplars(["def c(a):\n    return [a for _ in a]\n"]) == []
+    assert [e.expr for e in learn_return_exemplars(
+        ["def c(a):\n    return [a for _ in a]\n"])] == ["[a for _ in a]"]
+    assert learn_return_exemplars(
+        ["def leaky(a):\n    return [GLOBAL for _ in a]\n"]) == []
     # ...while a plain expression over the same param is still learned.
     assert [e.expr for e in learn_return_exemplars(
         ["def ok(a):\n    return a.upper()\n"])] == ["a.upper()"]

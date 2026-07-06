@@ -5070,11 +5070,15 @@ def _expr_matches_all(expr: str, stub: StubFunction,
     helper a strict, no-guess check."""
     if "__apex_self__" in expr:
         return False
-    env_globals = {"__builtins__": _SAFE_BUILTINS}
     for args, expected in witnesses:
-        local = dict(zip(stub.params, args))
+        # Params go in GLOBALS, not locals: a comprehension/generator body runs in
+        # an implicit nested scope that can see globals but NOT the enclosing
+        # eval's locals, so a param used inside `[a + x for x in b]` would raise
+        # NameError from a locals dict. Byte-identical for a plain expression
+        # (`a + b` resolves the same either way); it only unbreaks comprehensions.
+        env_globals = {"__builtins__": _SAFE_BUILTINS, **dict(zip(stub.params, args))}
         try:
-            value = eval(expr, env_globals, local)  # nosec B307 - fixed templates only
+            value = eval(expr, env_globals, {})  # nosec B307 - fixed templates only
         except Exception:
             return False
         if type(value) is not type(expected) or value != expected:
