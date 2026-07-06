@@ -557,6 +557,21 @@ def cmd_immune(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_manifesto(args: argparse.Namespace) -> int:
+    """The project's LIVING MANIFESTO — the architectural laws Apex has LEARNED
+    here (AVOID / FRAGILE / TRUST / PROVEN idioms), synthesised from its proof-
+    carrying experience. Read-only, deterministic, zero-token."""
+    from app.engine.manifesto import derive_manifesto, render_manifesto_markdown
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    manifesto = derive_manifesto(target)
+    if getattr(args, "json", False):
+        print(json.dumps(manifesto, indent=2))
+        return 0
+    print(render_manifesto_markdown(manifesto), end="")
+    return 0
+
+
 def _objective_reachability() -> tuple[list[str], set[str]]:
     """Every registered develop objective, plus the subset the idea engine can
     actually PROPOSE (i.e. a value in ``FACET_OBJECTIVE_MAP``).
@@ -1608,6 +1623,16 @@ def register_parsers(subparsers) -> None:
                                help="With --apply: cap modules to immunise (default 3)")
     immune_parser.add_argument("--json", action="store_true", help="Emit JSON")
     immune_parser.set_defaults(func=cmd_immune)
+
+    # manifesto — the architectural laws Apex has learned on this project
+    manifesto_parser = subparsers.add_parser(
+        "manifesto",
+        help="The project's living constitution: the AVOID / FRAGILE / TRUST / "
+             "proven-idiom laws Apex learned from its proof-carrying experience",
+    )
+    manifesto_parser.add_argument("--target", default="", help="Target project root")
+    manifesto_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    manifesto_parser.set_defaults(func=cmd_manifesto)
 
     # brief — a design-level idea as an actionable engineering brief
     brief_parser = subparsers.add_parser(
