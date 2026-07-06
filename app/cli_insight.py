@@ -524,6 +524,39 @@ def cmd_mutants(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_immune(args: argparse.Namespace) -> int:
+    """Apex's IMMUNE system — proactively find where the suite is blindest and,
+    with --apply, land mutant-killing assertions there via the strengthen-tests
+    engine. Default is a fast, read-only posture report (no writes)."""
+    from app.reporting.immune_report import immune_posture, render_immune_markdown
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    if getattr(args, "apply", False):
+        from app.engine.objective_compiler import compile_objective
+        result = compile_objective(
+            str(target), objective="strengthen-tests", apply=True, verify=True,
+            max_steps=getattr(args, "max_modules", 0) or 3)
+        landed = [s for s in result.steps if getattr(s, "verified", False)]
+        if getattr(args, "json", False):
+            print(json.dumps({"immunized": [s.target for s in landed],
+                              "count": len(landed)}, indent=2))
+            return 0
+        if not landed:
+            print("Immune sweep: no surviving mutant could be killed with an "
+                  "honest double-gated assertion right now (nothing landed).")
+            return 0
+        print(f"# Immune sweep — {len(landed)} module(s) hardened\n")
+        for step in landed:
+            print(f"- `{step.target}` — {step.description}")
+        return 0
+    posture = immune_posture(target, top=getattr(args, "top", 20))
+    if getattr(args, "json", False):
+        print(json.dumps(posture, indent=2))
+        return 0
+    print(render_immune_markdown(posture), end="")
+    return 0
+
+
 def _objective_reachability() -> tuple[list[str], set[str]]:
     """Every registered develop objective, plus the subset the idea engine can
     actually PROPOSE (i.e. a value in ``FACET_OBJECTIVE_MAP``).
@@ -1556,6 +1589,25 @@ def register_parsers(subparsers) -> None:
                                 help="Per-mutant pytest timeout in seconds")
     mutants_parser.add_argument("--json", action="store_true", help="Emit JSON")
     mutants_parser.set_defaults(func=cmd_mutants)
+
+    # immune — proactively find the suite's blind spots and (with --apply) land
+    # mutant-killing assertions there via the strengthen-tests engine
+    immune_parser = subparsers.add_parser(
+        "immune",
+        help="Immune posture: where the suite is blindest (fast, read-only); "
+             "--apply lands mutant-killing tests via strengthen-tests",
+    )
+    immune_parser.add_argument("--target", default="", help="Target project root")
+    immune_parser.add_argument("--top", type=int, default=20,
+                               help="How many highest-risk modules to show (default 20)")
+    immune_parser.add_argument(
+        "--apply", action="store_true",
+        help="Run a proactive immune sweep: land mutant-killing assertions on the "
+             "most-fragile modules (strengthen-tests, suite-verified, auto-rollback)")
+    immune_parser.add_argument("--max-modules", type=int, default=0, dest="max_modules",
+                               help="With --apply: cap modules to immunise (default 3)")
+    immune_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    immune_parser.set_defaults(func=cmd_immune)
 
     # brief — a design-level idea as an actionable engineering brief
     brief_parser = subparsers.add_parser(
