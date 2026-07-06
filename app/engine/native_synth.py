@@ -175,18 +175,40 @@ def learn_return_exemplars(sources: list[str]) -> list[ReturnExemplar]:
             if not _expr_uses_only(expr, set(params)):
                 continue
             seen.add(ReturnExemplar(node.name, params, expr))
-    return sorted(seen, key=lambda e: (len(e.params), e.name, e.expr))
+    # Sort on a TOTAL key: (arity, name, expr, params). ``params`` is the final
+    # tiebreak so two functions sharing name+arity+expr but differing only in
+    # parameter ORDER (``foo(a, b)`` vs ``foo(b, a)``) get a stable, hash-seed
+    # independent rank — without it the tie fell to ``set`` iteration order
+    # (PYTHONHASHSEED-randomised), making the downstream candidate order and thus
+    # a landed body non-reproducible across runs.
+    return sorted(seen, key=lambda e: (len(e.params), e.name, e.expr, e.params))
+
+
+# Binding/scoping constructs a transplanted body must NOT contain: a walrus
+# (``:=``) or a lambda/comprehension binds a name the plain Name-load check below
+# does not see as "free", so an unclean body (``[a for _ in a]``, ``(z := a)``)
+# could slip through. A transplantable body is a pure, binding-free expression,
+# so any of these disqualifies the exemplar outright.
+_BINDING_NODES: tuple[type[ast.AST], ...] = (
+    ast.NamedExpr, ast.Lambda, ast.ListComp, ast.SetComp, ast.DictComp,
+    ast.GeneratorExp,
+)
 
 
 def _expr_uses_only(expr: str, allowed: set[str]) -> bool:
-    """True when every NAME loaded in ``expr`` is in ``allowed`` (the params) — so
-    the body is self-contained and safe to transplant. Attribute/method calls on a
-    param (``x.upper()``) are fine; a bare free name (a global/other symbol) is not."""
+    """True when ``expr`` is a self-contained, binding-free expression whose every
+    loaded NAME is in ``allowed`` (the params) or the safe-builtins allowlist — so
+    it is safe to transplant. Attribute/method calls on a param (``x.upper()``) are
+    fine; a bare free name (a global/other symbol), OR any binding construct
+    (walrus, lambda, comprehension — which introduce names the Name-load scan
+    cannot vet), disqualifies it."""
     try:
         tree = ast.parse(expr, mode="eval")
     except (SyntaxError, ValueError):
         return False
     for node in ast.walk(tree):
+        if isinstance(node, _BINDING_NODES):
+            return False
         if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
             if node.id not in allowed and node.id not in _SAFE_BUILTINS:
                 return False

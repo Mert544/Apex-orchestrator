@@ -131,6 +131,30 @@ def test_ranking_does_not_change_what_the_gate_lands():
     assert landed == "x + y"  # x - y is tried first, refused; x + y verifies
 
 
+def test_param_order_tie_has_a_total_stable_order():
+    # Two functions share name+arity+expr but differ in PARAM ORDER. The exemplar
+    # sort key includes params, so their adapted candidates have a fixed order
+    # regardless of set-iteration (PYTHONHASHSEED) order: ('a','b') < ('b','a').
+    corpus = [
+        "def foo(a, b):\n    return a + b\n",
+        "def foo(b, a):\n    return a + b\n",
+    ]
+    exprs = [expr for _label, expr in mind_candidate_exprs(corpus, ("x", "y"))]
+    assert exprs == ["x + y", "y + x"]
+
+
+def test_binding_constructs_are_never_learned():
+    # A walrus, a lambda, or a comprehension introduces a bound name the plain
+    # Name-load check cannot vet — a transplantable body must be a pure,
+    # binding-free expression, so each of these is declined outright.
+    assert learn_return_exemplars(["def w(a):\n    return (z := a)\n"]) == []
+    assert learn_return_exemplars(["def l(a):\n    return lambda: a\n"]) == []
+    assert learn_return_exemplars(["def c(a):\n    return [a for _ in a]\n"]) == []
+    # ...while a plain expression over the same param is still learned.
+    assert [e.expr for e in learn_return_exemplars(
+        ["def ok(a):\n    return a.upper()\n"])] == ["a.upper()"]
+
+
 def test_guarded_wrong_shape_is_refused_by_the_gate():
     # A learned guard that does NOT satisfy the stub's examples lands nothing.
     corpus = ["def pick(a, b):\n    if a > b:\n        return a\n    else:\n        return b\n"]
