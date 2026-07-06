@@ -575,6 +575,26 @@ def cmd_objectives(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_native_mind(args: argparse.Namespace) -> int:
+    """Show what Apex's native intelligence has LEARNED from this project — the
+    reusable return-body idioms it mined from the project's own functions, ranked
+    by how often the codebase uses each. Read-only, deterministic, zero-token: it
+    reads the same corpus the opt-in ``APEX_NATIVE_MIND`` lane learns from, so the
+    report reflects exactly what Apex could transplant onto an unfinished stub."""
+    from app.reporting.native_mind_report import (
+        render_native_mind_markdown,
+        summarize_native_mind,
+    )
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    summary = summarize_native_mind(target, top=getattr(args, "top", 20))
+    if getattr(args, "json", False):
+        print(json.dumps(summary, indent=2))
+        return 0
+    print(render_native_mind_markdown(summary), end="")
+    return 0
+
+
 def _read_proof_of_fix(root: Path) -> dict:
     """The proof-of-fix evidence trail, read defensively (missing/corrupt → {}).
 
@@ -1660,6 +1680,18 @@ def register_parsers(subparsers) -> None:
     )
     objectives_parser.add_argument("--json", action="store_true", help="Emit JSON")
     objectives_parser.set_defaults(func=cmd_objectives)
+
+    # native-mind — what the native intelligence has learned from this project
+    native_mind_parser = subparsers.add_parser(
+        "native-mind",
+        help="Show the return-body idioms Apex's native intelligence learned from "
+             "this project's own code (the opt-in APEX_NATIVE_MIND corpus)",
+    )
+    native_mind_parser.add_argument("--target", default="", help="Target project root")
+    native_mind_parser.add_argument("--top", type=int, default=20,
+                                    help="How many dominant idioms to show (default 20)")
+    native_mind_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    native_mind_parser.set_defaults(func=cmd_native_mind)
 
     # trackrecord — Apex's proven, test-verified fix history on THIS repo
     trackrecord_parser = subparsers.add_parser(

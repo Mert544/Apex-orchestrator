@@ -278,6 +278,7 @@ from app.reporting.dashboard_sections import (  # noqa: F401  (re-exported)
     _kpi,
     _learned_section,
     _memory_vault_section,
+    _native_mind_section,
     _outscope_section,
     _outscope_test_corpus,
     _overview,
@@ -596,6 +597,7 @@ def _middle_nav_links(
         (bool(trajectory), ("trajectory", "Trajectory")),
         (_learned_has_entries(learned), ("learned", "Learned")),
         (bool(sections.memory_html), ("memory", "Memory")),
+        (bool(sections.nativemind_html), ("nativemind", "Native mind")),
         (bool(sections.trackrecord_html), ("trackrecord", "Track record")),
         (bool(sections.outscope_html), ("outscope", "Out of scope")),
         (bool(sections.jsscope_html), ("jsscope", "JS/TS")),
@@ -657,6 +659,7 @@ def _page_sections(
             _trajectory_section(trajectory),
             _learned_section(learned),
             sections.memory_html,
+            sections.nativemind_html,
             sections.trackrecord_html,
             sections.outscope_html,
             sections.jsscope_html,
@@ -684,11 +687,13 @@ def _render_html(project_root, profile, findings, idea_report, action_plan, reas
         quality_html=_quality_section(project_root) if quality else "",
         trackrecord_html=_trackrecord_section(learned, project_root),
         outscope_html=_outscope_section(project_root),
-        # Two "living-cell" cards, rendered once (both gate a nav link and appear
-        # in the body): the full memory vault (L5) and the JS/TS scope (L1). Each
-        # self-gates to "" when absent, so a Python-only / fresh project is
-        # byte-identical to before.
+        # "Living-cell" cards, rendered once (each gates a nav link and appears in
+        # the body): the full memory vault (L5), the native intelligence's learned
+        # idioms (inner-intelligence layer), and the JS/TS scope (L1). Each
+        # self-gates to "" when absent, so a fresh / library-idiom-less / Python-only
+        # project stays byte-identical to before.
         memory_html=_memory_vault_section(project_root),
+        nativemind_html=_native_mind_section(project_root),
         jsscope_html=_js_scope_section(project_root),
     )
     links = _nav_links(

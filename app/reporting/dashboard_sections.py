@@ -46,6 +46,7 @@ class RenderedSections:
     outscope_html: str = ""
     memory_html: str = ""
     jsscope_html: str = ""
+    nativemind_html: str = ""
 
 
 def _esc(value: Any) -> str:
@@ -1430,4 +1431,35 @@ def _js_scope_section(project_root: str) -> str:
     body = (f"<div class='chips'>{chips}</div>{gap}"
             f"<h4>Dependency hubs</h4><ul class='jsscope'>{hub_lis}</ul>")
     return _card("jsscope", "🟨", "JS/TS scope", body)
+
+
+def _native_mind_section(project_root: str) -> str:
+    """The native intelligence, made visible — the reusable return-body idioms Apex
+    learned from THIS project's own functions (the corpus the opt-in
+    ``APEX_NATIVE_MIND`` lane transplants from). Renders only when at least one
+    idiom was learned; a project with no self-contained single/guarded returns
+    shows nothing. Cheap (one AST pass over own sources), deterministic, zero
+    tokens."""
+    try:
+        from app.reporting.native_mind_report import summarize_native_mind
+
+        summary = summarize_native_mind(project_root, top=6)
+    except Exception:
+        return ""
+    if not summary.get("exemplars"):
+        return ""
+    by_arity = summary.get("by_arity") or {}
+    chips = (f"{_chip('bodies learned', summary['exemplars'])}"
+             f"{_chip('distinct idioms', summary['distinct_shapes'])}"
+             f"{_chip('max arity', max(by_arity) if by_arity else 0)}")
+    idiom_lis = "".join(
+        f"<li><code>{_esc(row['shape'])}</code> · {row['count']}× "
+        f"(arity {row['arity']})</li>"
+        for row in summary.get("top_idioms", [])) or "<li class='muted'>none</li>"
+    body = (f"<div class='chips'>{chips}</div>"
+            f"<p class='muted'>Apex grew this brain from your own code — no LLM, no "
+            f"tokens. With <code>APEX_NATIVE_MIND=1</code> it can finish an unfinished "
+            f"stub by transplanting one of these, verified by the same never-fake-green "
+            f"gate.</p><h4>Dominant idioms</h4><ul class='nativemind'>{idiom_lis}</ul>")
+    return _card("nativemind", "🧠", "Native intelligence — learned idioms", body)
 
