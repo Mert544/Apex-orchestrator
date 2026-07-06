@@ -11,9 +11,11 @@ grow without ever loosening the self-contained (params-only) rule.
 from __future__ import annotations
 
 from app.engine.native_synth import (
+    _SAFE_BUILTINS,
     learn_return_exemplars,
     mind_candidate_exprs,
 )
+from app.execution.stub_synthesis import _SAFE_BUILTINS as _SANDBOX_BUILTINS
 from app.execution.stub_synthesis import find_stub_functions, verify_body_via_doctest
 
 
@@ -153,6 +155,25 @@ def test_binding_constructs_are_never_learned():
     # ...while a plain expression over the same param is still learned.
     assert [e.expr for e in learn_return_exemplars(
         ["def ok(a):\n    return a.upper()\n"])] == ["a.upper()"]
+
+
+def test_native_builtins_are_a_subset_of_the_eval_sandbox():
+    # Anti-drift: every builtin a learned body may use MUST be evaluable by
+    # stub_synthesis's in-process sandbox, or the cheap scan raises NameError and
+    # under-counts a body the pytest apply would land. True/False/None are
+    # ast.Constant, not sandbox names, so they are excluded from the check.
+    callables = {b for b in _SAFE_BUILTINS if b not in ("True", "False", "None")}
+    assert callables <= set(_SANDBOX_BUILTINS), (
+        callables - set(_SANDBOX_BUILTINS))
+
+
+def test_stub_param_shadowing_a_builtin_is_dropped():
+    # `len(a)` learned from `g` cannot transplant onto a stub whose param is named
+    # `len` (it would become the corrupt `len(len)`) — dropped, not proposed.
+    corpus = ["def g(a):\n    return len(a)\n"]
+    assert mind_candidate_exprs(corpus, ("len",)) == []
+    # ...but the same body transplants cleanly when no param shadows the builtin.
+    assert mind_candidate_exprs(corpus, ("x",)) == [("native-mind:g", "len(x)")]
 
 
 def test_guarded_wrong_shape_is_refused_by_the_gate():

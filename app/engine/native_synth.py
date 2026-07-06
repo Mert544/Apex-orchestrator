@@ -215,12 +215,20 @@ def _expr_uses_only(expr: str, allowed: set[str]) -> bool:
     return True
 
 
-# Builtins a transplanted expression may reference (pure, always available) — kept
-# tiny and side-effect-free on purpose; anything else disqualifies the exemplar.
+# Builtins a transplanted expression may reference — pure, side-effect-free, and
+# (critically) each one MUST be present in ``stub_synthesis``'s in-process eval
+# sandbox so a learned body evaluates identically on the cheap in-process scan
+# (``_expr_matches_all``) and on the pytest apply. Admitting a builtin the sandbox
+# lacks (``dict``/``any``/``all``/``range``/``zip``/``enumerate``/``reversed`` used
+# to be here) makes the in-process scan raise ``NameError`` and UNDER-COUNT a body
+# the pytest gate would actually land — a scan/apply inconsistency. This set is
+# therefore kept a SUBSET of that sandbox (a test in tests/ pins the invariant).
+# ``True``/``False``/``None`` parse as ``ast.Constant`` (never ``ast.Name``) in
+# Py3, so they are constants the sandbox eval handles natively — kept for clarity.
 _SAFE_BUILTINS: frozenset[str] = frozenset({
     "abs", "min", "max", "len", "sum", "sorted", "int", "str", "float", "bool",
-    "list", "tuple", "dict", "set", "round", "any", "all", "range", "zip",
-    "enumerate", "reversed", "True", "False", "None",
+    "list", "tuple", "set", "round", "hex", "oct", "bin", "chr", "ord",
+    "bytes", "bytearray", "True", "False", "None",
 })
 
 
@@ -253,6 +261,26 @@ def adapt_expr_to_params(exemplar_params: tuple[str, ...], expr: str,
         return None
 
 
+def _body_calls_a_shadowed_builtin(expr: str, exemplar_params: tuple[str, ...],
+                                   shadowed: set[str]) -> bool:
+    """True when ``expr`` references a SAFE BUILTIN whose name is ALSO a stub param
+    (in ``shadowed``) and is not itself an exemplar param — after the positional
+    remap introduces that param, the name resolves to the param and shadows the
+    builtin, producing a corrupt body (``len(a)`` onto a stub ``(len,)`` becomes
+    ``len(len)``). Such a candidate is dropped rather than proposed: it would be
+    gate-refused anyway, so this only avoids a wasted, misleading proposal."""
+    try:
+        tree = ast.parse(expr, mode="eval")
+    except (SyntaxError, ValueError):
+        return True  # unparseable — drop conservatively
+    allowed = set(exemplar_params)
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+                and node.id in shadowed and node.id not in allowed):
+            return True
+    return False
+
+
 def mind_candidate_exprs(sources: list[str],
                          stub_params: tuple[str, ...]) -> list[tuple[str, str]]:
     """The native intelligence's ranked ``(label, return_expr)`` candidates for a
@@ -269,11 +297,14 @@ def mind_candidate_exprs(sources: list[str],
     because the caller still runs each through ``stub_synthesis``'s never-fake-green
     gate and lands the first that verifies (a wrong-but-frequent shape is refused,
     a right-but-rare one still gets its turn)."""
+    shadowed = set(stub_params) & _SAFE_BUILTINS
     frequency: dict[str, int] = {}
     first: dict[str, tuple[int, str]] = {}
     for index, ex in enumerate(learn_return_exemplars(sources)):
         if len(ex.params) != len(stub_params):
             continue
+        if shadowed and _body_calls_a_shadowed_builtin(ex.expr, ex.params, shadowed):
+            continue  # a stub param is named after a builtin the body uses
         adapted = adapt_expr_to_params(ex.params, ex.expr, stub_params)
         if adapted is None:
             continue

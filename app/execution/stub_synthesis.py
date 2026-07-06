@@ -5177,6 +5177,17 @@ def _matching_shapes(root: Path, test_files: list[str], stub: StubFunction,
     for label, expr in _ordered_candidates(root, test_files, stub, module_source):
         if label == "constant" or "__apex_self__" in expr:
             continue
+        # Opt-in native-mind PROPOSALS never feed the ambiguity refuse-floor: they
+        # are gated in the landing loop only. Counting them here would let a body
+        # learned from the project's own code coincidentally match a thin contract,
+        # add a competing "shape", and flip an otherwise-unambiguous stub to
+        # refused — SUPPRESSING a template body that already landed with the lane
+        # off. Templates always precede native in the landing loop, so a template
+        # still wins when unambiguous and native only fills a genuine gap; excluding
+        # native here keeps the ambiguity floor byte-identical to the lane-off case
+        # (the lane stays strictly additive) without weakening template protection.
+        if label.startswith("native-mind:"):
+            continue
         if not _expr_matches_all(expr, stub, evaluable):
             continue
         shape = _identity_canonical_shape(expr, stub)

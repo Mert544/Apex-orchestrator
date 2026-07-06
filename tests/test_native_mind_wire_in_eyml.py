@@ -115,6 +115,41 @@ def test_lands_a_stub_no_fixed_template_covers(clamp_project, monkeypatch):
         clamp_project, ["tests/test_bound.py"], stub) == "max(b, min(a, c))"
 
 
+def test_enabling_the_lane_never_suppresses_a_landing(tmp_path, monkeypatch):
+    """The lane is strictly ADDITIVE: turning it ON must never make Apex land LESS.
+
+    Regression for the ambiguity-floor defect — a native body that coincidentally
+    matched a thin contract used to add a competing "shape" and flip an
+    unambiguous stub to refused. Here ``f`` is pinned by all-positive witnesses so
+    a passthrough (``n``) is unambiguous and lands with the lane OFF; the project's
+    own ``cap`` (``min(n, 7)``) also matches those witnesses but diverges at n=8.
+    With native excluded from the ambiguity floor, the stub still lands ``n`` ON."""
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/helper.py", "def cap(n):\n    return min(n, 7)\n")
+    _write(tmp_path, "pkg/f.py", "def f(n):\n    raise NotImplementedError\n")
+    _write(tmp_path, "tests/test_f.py", """
+        from pkg.f import f
+
+        def test_three():
+            assert f(3) == 3
+
+        def test_seven():
+            assert f(7) == 7
+        """)
+    src = (tmp_path / "pkg" / "f.py").read_text(encoding="utf-8")
+    stub = find_stub_functions(src)[0]
+
+    monkeypatch.delenv("APEX_NATIVE_MIND", raising=False)
+    _native_mind_sources.cache_clear()
+    off = synthesize_expr_from_witnesses(tmp_path, ["tests/test_f.py"], stub)
+    assert off == "n"  # passthrough lands unambiguously with the lane off
+
+    monkeypatch.setenv("APEX_NATIVE_MIND", "1")
+    _native_mind_sources.cache_clear()
+    on = synthesize_expr_from_witnesses(tmp_path, ["tests/test_f.py"], stub)
+    assert on == "n"  # still lands — native must not suppress it via the floor
+
+
 def test_wrong_learned_body_is_refused_by_the_gate(tmp_path, monkeypatch):
     """A learned body that does NOT satisfy the stub's tests lands NOTHING even
     with the lane ON — never-fake-green holds through the wire-in."""
