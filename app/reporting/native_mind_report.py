@@ -56,14 +56,19 @@ def summarize_native_mind(root: str | Path, top: int = 20) -> dict:
     raises."""
     sources = list(_native_mind_sources(str(Path(root))))
     exemplars = learn_return_exemplars(sources)
-    shapes: dict[str, dict] = {}
+    # Group by (shape, arity): two same-prefix bodies of DIFFERENT arity
+    # (``p0 + p1`` from a 2-arg sum vs a 3-arg body that ignores its 3rd param)
+    # are distinct idioms and must not merge into one inflated row.
+    shapes: dict[tuple[str, int], dict] = {}
     for ex in exemplars:
         shape = _canonical_shape(ex.params, ex.expr)
+        arity = len(ex.params)
         slot = shapes.setdefault(
-            shape, {"count": 0, "arity": len(ex.params), "example": ex.name})
+            (shape, arity),
+            {"count": 0, "shape": shape, "arity": arity, "example": ex.name})
         slot["count"] += 1
     ranked = sorted(
-        shapes.items(), key=lambda kv: (-kv[1]["count"], kv[1]["arity"], kv[0]))
+        shapes.values(), key=lambda m: (-m["count"], m["arity"], m["shape"]))
     by_arity: dict[int, int] = {}
     for meta in shapes.values():
         by_arity[meta["arity"]] = by_arity.get(meta["arity"], 0) + 1
@@ -72,9 +77,9 @@ def summarize_native_mind(root: str | Path, top: int = 20) -> dict:
         "distinct_shapes": len(shapes),
         "by_arity": {a: by_arity[a] for a in sorted(by_arity)},
         "top_idioms": [
-            {"shape": shape, "count": meta["count"], "arity": meta["arity"],
-             "example": meta["example"]}
-            for shape, meta in ranked[:max(0, top)]
+            {"shape": m["shape"], "count": m["count"], "arity": m["arity"],
+             "example": m["example"]}
+            for m in ranked[:max(0, top)]
         ],
     }
 
@@ -238,6 +243,8 @@ def render_experience_markdown(reliability: dict[str, float]) -> str:
         "(recency-weighted; a shape retired by a `set_baseline` architectural "
         "reset never appears):")
     lines.append("")
-    for shape, score in ranked:
-        lines.append(f"- `{shape}` — score **{score:g}**")
+    for key, score in ranked:
+        arity, _, body = key.partition(":")  # keys are "<arity>:<shape>"
+        suffix = f" ({arity}-arg)" if arity.isdigit() else ""
+        lines.append(f"- `{body or key}`{suffix} — score **{score:g}**")
     return "\n".join(lines) + "\n"

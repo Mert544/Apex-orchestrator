@@ -35,16 +35,19 @@ __all__ = [
 
 
 def canonical_shape(params: tuple[str, ...], expr: str) -> str:
-    """``expr`` with its params renamed to positional placeholders ``p0, p1, …`` —
-    the arity-normalised IDENTITY of an idiom, so ``a + b`` (from ``add(a, b)``)
-    and ``m + n`` (from ``plus(m, n)``) share one shape ``p0 + p1``. This is the key
-    the visibility report groups by AND the key the experience memory scores by, so
-    a body learned, proposed, and later remembered is the same idiom throughout.
-    Falls back to ``expr`` unchanged when the remap cannot apply (already
-    placeholder-shaped, or an arity the adapter declines)."""
+    """The arity-qualified IDENTITY of an idiom: ``expr`` with its params renamed to
+    positional placeholders ``p0, p1, …`` PREFIXED by the arity (``2:p0 + p1``), so
+    ``a + b`` (from ``add(a, b)``) and ``m + n`` (from ``plus(m, n)``) share one key
+    while a same-prefix body of a DIFFERENT arity does NOT collide with it — a
+    2-arg ``a + b`` (``2:p0 + p1``) and a 3-arg ``a + b`` that ignores its third
+    param (``3:p0 + p1``) are distinct idioms, so their experience never
+    cross-contaminates. The key the experience memory scores by; deterministic.
+    Falls back to the raw ``expr`` (still arity-prefixed) when the remap can't
+    apply (already placeholder-shaped, or an arity the adapter declines)."""
     canon = tuple(f"p{i}" for i in range(len(params)))
     adapted = adapt_expr_to_params(params, expr, canon)
-    return adapted if adapted is not None else expr
+    body = adapted if adapted is not None else expr
+    return f"{len(params)}:{body}"
 
 
 class ReturnExemplar:

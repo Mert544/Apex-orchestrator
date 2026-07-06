@@ -144,7 +144,12 @@ def _landed_native_shapes(root: Path, module_rel: str, original: str,
         if expr is None:
             continue
         tests = pinned_test_files(root, module_rel, stub.name)
-        witnesses = _function_witnesses(root, tests, stub) if tests else []
+        # Seed witnesses with ``original`` as module_source — the EXACT input the
+        # real fill path gives ``_ordered_candidates``. Without it a value-template
+        # (``n * 2``) seeded ONLY by the stub's docstring examples is missing from
+        # ``template_exprs`` here, so a body that landed as a TEMPLATE would be
+        # mis-attributed to the native lane (DEFECT: over-recorded experience).
+        witnesses = _function_witnesses(root, tests, stub, original)
         template_exprs = {e for _label, e in candidate_bodies(stub, witnesses)}
         native_exprs = {e for _label, e in mind_candidate_exprs(sources, stub.params)}
         if expr in native_exprs and expr not in template_exprs:

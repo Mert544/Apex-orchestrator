@@ -1141,13 +1141,7 @@ def _apply_one_move(result: CompileResult, mv: Move, root: str, current: float,
         if res.get("reason"):
             result.blocked.append(f"{mv.target}: {res['reason']}")
         return False, current
-    # The move LANDED and its suite verified: remember any native-only idiom shapes
-    # it landed, so the native lane ranks a proven idiom first next time. Recorded
-    # ONLY here (real apply, post-verify) — never during the dry-run plan build —
-    # and a no-op for every plan that landed no native-only body.
-    if getattr(plan, "native_shapes", None):
-        from app.engine.native_proof_memory import record_native_landing
-        record_native_landing(root, plan.native_shapes)
+    _record_native_experience(root, plan, res)
     nxt = max(0.0, current - 1)
     value = 0.0
     if value_aware:
@@ -1160,6 +1154,22 @@ def _apply_one_move(result: CompileResult, mv: Move, root: str, current: float,
         coverage=str(res.get("coverage") or ""), value=value, tier=tier,
         verification_unavailable=bool(res.get("verification_unavailable"))))
     return True, nxt
+
+
+def _record_native_experience(root: str, plan: Any, res: dict) -> None:
+    """Remember any native-only idiom shapes a VERIFIED apply landed, so the native
+    lane ranks a proven idiom first next time. Gated on ``verified is True`` (not
+    merely ``applied``) so experience reflects only suite-proven landings — a
+    verification-unavailable / no-suite apply keeps its change but earns no
+    experience. Called ONLY after a real applied move (never a dry-run/rollback);
+    a no-op for a plan that landed no native-only body."""
+    if res.get("verified") is not True:
+        return
+    shapes = getattr(plan, "native_shapes", None)
+    if not shapes:
+        return
+    from app.engine.native_proof_memory import record_native_landing
+    record_native_landing(root, shapes)
 
 
 def _run_pass(result: CompileResult, moves: list[Move], root: str, current: float,
