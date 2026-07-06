@@ -1238,7 +1238,8 @@ def _develop_auto(args, target, grade_before, max_steps, verify, apply) -> int:
                                    scope_verify=getattr(args, "fast", False),
                                    min_move_value=_min_move_value(args),
                                    scope_module=scope_module,
-                                   covered_only=covered_only)
+                                   covered_only=covered_only,
+                                   risk_aware=getattr(args, "risk_aware", False))
         if (result.steps or result.fitness_start > 0
                 or result.verification_unavailable):
             # Retain a verification-unavailable decline so `apex develop --auto`
@@ -2444,6 +2445,10 @@ def register_parsers(subparsers) -> None:
     develop_parser.add_argument("--target", default="", help="Target project root")
     develop_parser.add_argument("--objective", default="dead-params",
                                 help="Objective to pursue (default: dead-params)")
+    develop_parser.add_argument(
+        "--risk-aware", action="store_true", dest="risk_aware",
+        help="Order moves by LEARNED rollback risk (proof history) — try the "
+             "low-risk ones first, like the maintain path; no-op without history")
     develop_parser.add_argument(
         "--session", action="store_true",
         help="Run the combined concrete-objective session (same as the `session` "

@@ -987,12 +987,31 @@ def _resolve_compile_target(
         blocked=[f"unknown objective '{objective}' (known: {known})"])
 
 
+def _risk_ordered(moves: list[Move], root: str | Path) -> list[Move]:
+    """Stable ascending-``fix_risk`` reorder — the SAME learned-risk nervous signal
+    the maintain path (``idea_action_bridge._risk_ordered``) already acts on, now
+    available to the develop loop: a move whose ``(action, module)`` has
+    historically rolled back is tried LATER, saving a wasted apply+rollback.
+
+    Best-effort at the edge: any failure leaves the order untouched. With NO proof
+    history every move scores the neutral ``0.5`` (``fix_risk``'s baseline), so a
+    stable sort is a no-op — a fresh project is byte-identical even with the signal
+    on. This closes the sense→decide loop for BOTH motor pathways symmetrically."""
+    try:
+        from app.engine.fix_risk_model import fix_risk
+
+        return sorted(moves, key=lambda m: fix_risk(root, m.operator, _move_module(m)))
+    except Exception:
+        return moves
+
+
 def _ordered_candidates(generate: Callable[[str | Path], list[Move]], root: str,
                         scope_module: str | None, memory: Any,
                         last_operator: str, value_aware: bool = False,
                         centrality: dict[str, int] | None = None,
                         realization: dict[str, float] | None = None,
-                        js_centrality: dict[str, int] | None = None) -> list[Move]:
+                        js_centrality: dict[str, int] | None = None,
+                        risk_aware: bool = False) -> list[Move]:
     """The candidate moves for one scan, scoped and ordered.
 
     Generates the objective's moves against the CURRENT tree, confines them to
@@ -1052,6 +1071,12 @@ def _ordered_candidates(generate: Callable[[str | Path], list[Move]], root: str,
     elif last_operator:
         moves = sorted(
             moves, key=lambda m: -memory.sequence_factor(last_operator, m.operator))
+    if risk_aware:
+        # A final STABLE ascending-risk pass: learned rollback-risk becomes the
+        # primary order (safety first, mirroring the maintain path), and the
+        # value/sequence order above breaks ties. Opt-in and a no-op without proof
+        # history, so a default campaign stays byte-identical.
+        moves = _risk_ordered(moves, root)
     return moves
 
 
@@ -1356,6 +1381,7 @@ def compile_objective(project_root: str | Path, objective: str = "dead-params",
                       min_move_value: float = 0.0,
                       covered_only: bool = False,
                       baseline_failing: frozenset[str] | None = None,
+                      risk_aware: bool = False,
                       ) -> CompileResult:
     """Greedily compose verified moves toward ``objective``.
 
@@ -1450,7 +1476,7 @@ def compile_objective(project_root: str | Path, objective: str = "dead-params",
     def candidates() -> list[Move]:
         return _ordered_candidates(generate, root, scope_module, memory,
                                    last_operator, value_aware, move_centrality,
-                                   realization, js_centrality)
+                                   realization, js_centrality, risk_aware)
 
     def measure() -> float:
         # Scoped runs measure the local debt (remaining scoped moves); a global
