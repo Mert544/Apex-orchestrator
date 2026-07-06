@@ -24,6 +24,7 @@ Invariants (the reason this stays inside the zero-token core):
 from __future__ import annotations
 
 import ast
+import copy
 
 __all__ = [
     "ReturnExemplar",
@@ -279,17 +280,143 @@ def _elif_chain_return_expr(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str
         return None
 
 
+def _plain_assign_name(stmt: ast.stmt) -> str | None:
+    """The assigned NAME when ``stmt`` is a single-target, plain ``name = <expr>``
+    assignment (an ``ast.Assign`` to a bare ``ast.Name``) — ``None`` for anything
+    else: tuple/list-unpacking (``x, y = ...``) or attribute/subscript targets
+    (``self.x = ...``, ``d[0] = ...``), an ``ast.AugAssign`` (``r += a``), or an
+    ``ast.AnnAssign``. Any of those disqualifies the whole inlined-temps shape
+    (the caller declines the body outright rather than partially inlining it)."""
+    if (isinstance(stmt, ast.Assign) and len(stmt.targets) == 1
+            and isinstance(stmt.targets[0], ast.Name)):
+        return stmt.targets[0].id
+    return None
+
+
+def _collect_temp_assignments(stmts: list[ast.stmt],
+                              params: frozenset[str]) -> list[tuple[str, ast.expr]] | None:
+    """The ordered ``(name, rhs)`` pairs of a run of SIMPLE, SINGLE-USE temp
+    assignments — ``None`` when any statement is not a plain assignment
+    (:func:`_plain_assign_name` — so an ``if``/``for``/``while``/``with``/``try``/
+    ``raise``/bare expression/second ``return``/etc. among the assignments
+    disqualifies the whole body), a name is assigned more than once (a
+    RE-assigned temp is not a clean single-use shape), or a name collides with a
+    PARAMETER (``a = a + 1`` mutates the parameter itself — too subtle a shape to
+    safely inline, so the whole body is declined rather than guessed at)."""
+    pairs: list[tuple[str, ast.expr]] = []
+    assigned: set[str] = set()
+    for stmt in stmts:
+        name = _plain_assign_name(stmt)
+        if name is None or name in assigned or name in params:
+            return None
+        assigned.add(name)
+        pairs.append((name, stmt.value))
+    return pairs
+
+
+class _InlineTemp(ast.NodeTransformer):
+    """Replace every LOADED reference to one temp name with its (already-folded)
+    RHS expression, deep-copied per substitution site so no AST node is shared
+    across more than one location in the resulting tree — a body that uses the
+    same temp twice (``return r + r``) must get two INDEPENDENT copies of its
+    RHS, not one node aliased into two places, for ``ast.unparse`` to render each
+    occurrence correctly."""
+
+    def __init__(self, name: str, replacement: ast.expr) -> None:
+        self._name = name
+        self._replacement = replacement
+
+    def visit_Name(self, node: ast.Name) -> ast.AST:
+        if isinstance(node.ctx, ast.Load) and node.id == self._name:
+            return copy.deepcopy(self._replacement)
+        return node
+
+
+def _fold_temp_assignments(ret_value: ast.expr,
+                           assigns: list[tuple[str, ast.expr]]) -> ast.expr:
+    """Inline ``assigns`` (ordered EARLIEST-first, as they appear in the source)
+    into ``ret_value`` so the whole body becomes ONE self-contained expression.
+
+    Folds in REVERSE assignment order: substituting the LAST-assigned temp
+    FIRST means its own RHS (which may still reference an EARLIER temp) becomes
+    part of the expression before that earlier temp's turn — so a chain
+    (``x = a + 1; y = x * 2; return y``) resolves correctly to ``(a + 1) * 2``
+    with no separate dependency-ordering step."""
+    result = ret_value
+    for name, rhs in reversed(assigns):
+        result = _InlineTemp(name, rhs).visit(result)
+    return result
+
+
+def _method_call_count(tree: ast.AST) -> int:
+    """The number of METHOD calls (``obj.meth(...)`` — an ``ast.Call`` whose func
+    is an ``ast.Attribute``) in ``tree``. A bare-function call to a safe builtin
+    (``len(a)``) has a ``Name`` func and does NOT count — it is pure. The
+    inlined-temps shape uses this to refuse a fold that would DUPLICATE (``r =
+    a.pop(); return r + r`` -> ``a.pop() + a.pop()``) or REORDER (``x = a.pop(); y
+    = a.pop(); return y - x``) a possibly-mutating method call: the
+    self-containment gate admits method calls on a param (``x.upper()``) but
+    cannot prove them side-effect-free, and — unlike the three verbatim shapes —
+    inlining is the step that introduces the extra evaluation, so more than one
+    surviving method call means the collapsed body may not match its source."""
+    return sum(1 for n in ast.walk(tree)
+               if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute))
+
+
+def _inlined_temps_return_expr(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None:
+    """The source of a single, self-contained expression for a body that is
+    EXACTLY a run of zero-or-more simple, single-use temp assignments followed
+    by one ``return <expr>`` — the FOURTH finishable shape, e.g.:
+
+    * ``r = a + 1; return r``               -> ``a + 1``
+    * ``s = a + b; return s * 2``           -> ``(a + b) * 2``
+    * ``x = a + 1; y = x * 2; return y``    -> ``(a + 1) * 2``  (chained)
+
+    Each temp is substituted into the return expression in order — earlier
+    temps resolved into later ones first, via :func:`_fold_temp_assignments` —
+    so the whole body collapses to ONE expression the native intelligence can
+    transplant exactly like the other three shapes (same positional remap, same
+    never-fake-green gate). ``None`` for anything richer or non-conforming: a
+    non-assign/return statement anywhere in the body (``if``/``for``/``while``/
+    ``with``/``try``/``raise``/a bare expression statement/a bare ``return``/more
+    than one ``return``/``yield``), a re-assigned temp, an augmented or
+    destructuring/attribute/subscript assignment, a temp name that collides with a
+    parameter (see :func:`_collect_temp_assignments`), OR a fold that would leave
+    more than one method call (see :func:`_method_call_count`) — inlining a
+    possibly-mutating ``a.pop()`` twice, or reordering two of them, would make the
+    collapsed body diverge from the source it was learned from."""
+    body = _strip_docstring(list(node.body))
+    if not body:
+        return None
+    ret_value = _sole_return_value(body[-1:])
+    if ret_value is None:
+        return None
+    params = frozenset(_positional_params(node))
+    assigns = _collect_temp_assignments(body[:-1], params)
+    if assigns is None:
+        return None
+    folded = _fold_temp_assignments(ret_value, assigns)
+    if _method_call_count(folded) > 1:
+        return None  # inlining would duplicate/reorder a possibly-mutating call
+    try:
+        return ast.unparse(folded)
+    except Exception:
+        return None
+
+
 def learn_return_exemplars(sources: list[str]) -> list[ReturnExemplar]:
     """Mine every ``return <expr>`` body from ``sources`` (the project's own code)
     into a deterministic, de-duplicated, sorted library of candidate bodies.
 
     A function contributes an exemplar only when it has simple positional params
     and a finishable body — a single ``return <expr>``, a two-branch guarded
-    return (``if T: return A; return B`` -> ``A if T else B``), OR an elif-chain
+    return (``if T: return A; return B`` -> ``A if T else B``), an elif-chain
     return (``if T1: return A; elif T2: return B; else: return C`` -> ``A if T1
-    else (B if T2 else C)``) — AND the resulting expression references ONLY those
-    params (a self-contained rule the native intelligence can safely transplant to
-    another function of the same arity — no free names, no globals)."""
+    else (B if T2 else C)``), OR a run of single-use temp assignments ending in a
+    ``return`` (``r = a + 1; return r`` -> ``a + 1``; chained temps fold in
+    order) — AND the resulting expression references ONLY those params (a
+    self-contained rule the native intelligence can safely transplant to another
+    function of the same arity — no free names, no globals)."""
     seen: set[ReturnExemplar] = set()
     for source in sources:
         try:
@@ -303,7 +430,8 @@ def learn_return_exemplars(sources: list[str]) -> list[ReturnExemplar]:
             if not params:
                 continue
             expr = (_single_return_expr(node) or _guarded_return_expr(node)
-                    or _elif_chain_return_expr(node))
+                    or _elif_chain_return_expr(node)
+                    or _inlined_temps_return_expr(node))
             if expr is None:
                 continue
             if not _expr_uses_only(expr, set(params)):
@@ -318,14 +446,17 @@ def learn_return_exemplars(sources: list[str]) -> list[ReturnExemplar]:
     return sorted(seen, key=lambda e: (len(e.params), e.name, e.expr, e.params))
 
 
-# Binding/scoping constructs a transplanted body must NOT contain: a walrus
-# (``:=``) or a lambda/comprehension binds a name the plain Name-load check below
-# does not see as "free", so an unclean body (``[a for _ in a]``, ``(z := a)``)
-# could slip through. A transplantable body is a pure, binding-free expression,
-# so any of these disqualifies the exemplar outright.
+# Binding/scoping/suspension constructs a transplanted body must NOT contain: a
+# walrus (``:=``) or a lambda/comprehension binds a name the plain Name-load check
+# below does not see as "free", so an unclean body (``[a for _ in a]``,
+# ``(z := a)``) could slip through; a ``yield``/``yield from``/``await`` turns the
+# spliced function into a generator/coroutine (a different return protocol
+# entirely — ``(yield a)`` parses in ``mode="eval"`` on some CPythons, so the
+# Name-load scan alone would pass it). A transplantable body is a pure,
+# binding-free, non-suspending expression, so any of these disqualifies it outright.
 _BINDING_NODES: tuple[type[ast.AST], ...] = (
     ast.NamedExpr, ast.Lambda, ast.ListComp, ast.SetComp, ast.DictComp,
-    ast.GeneratorExp,
+    ast.GeneratorExp, ast.Yield, ast.YieldFrom, ast.Await,
 )
 
 

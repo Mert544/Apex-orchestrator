@@ -28,14 +28,21 @@ def test_learns_single_return_exemplars():
     assert ("shout", ("s",), "s.upper()") in got
 
 
-def test_drops_multi_statement_and_free_name_and_varargs():
+def test_drops_free_name_and_varargs_and_bare_return():
     ex = learn_return_exemplars([
-        "def multi(a):\n    x = a + 1\n    return x\n",   # multi-statement
         "def freeref(a):\n    return a + GLOBAL\n",        # free name (GLOBAL)
         "def variadic(*args):\n    return sum(args)\n",    # varargs
         "def bare(a):\n    return\n",                       # bare return
     ])
     assert ex == []
+
+
+def test_single_temp_then_return_is_now_a_learned_fourth_shape():
+    # A one-assignment-then-return body is the FOURTH finishable shape (see
+    # tests/test_native_synth_inline_temps_eyml.py for the full inlined-temps
+    # pattern space) -> the temp is inlined into the return, no longer declined.
+    ex = learn_return_exemplars(["def multi(a):\n    x = a + 1\n    return x\n"])
+    assert [(e.name, e.expr) for e in ex] == [("multi", "a + 1")]
 
 
 def test_docstring_is_skipped_before_single_return():
