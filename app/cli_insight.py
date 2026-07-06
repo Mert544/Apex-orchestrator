@@ -583,12 +583,21 @@ def cmd_native_mind(args: argparse.Namespace) -> int:
     report reflects exactly what Apex could transplant onto an unfinished stub."""
     from app.reporting.native_mind_report import (
         finishable_stubs,
+        render_experience_markdown,
         render_finishable_stubs_markdown,
         render_native_mind_markdown,
         summarize_native_mind,
     )
 
     target = Path(args.target).resolve() if args.target else _get_project_root()
+    if getattr(args, "experience", False):
+        from app.engine.native_proof_memory import decayed_reliability
+        reliability = decayed_reliability(target)
+        if getattr(args, "json", False):
+            print(json.dumps(reliability, indent=2))
+            return 0
+        print(render_experience_markdown(reliability), end="")
+        return 0
     if getattr(args, "stubs", False):
         rows = finishable_stubs(target)
         if getattr(args, "json", False):
@@ -1705,6 +1714,10 @@ def register_parsers(subparsers) -> None:
         "--stubs", action="store_true",
         help="Dry-run: which of THIS project's unfinished stubs the native lane "
              "could finish (flagging the native-only wins), no writes")
+    native_mind_parser.add_argument(
+        "--experience", action="store_true",
+        help="Show the idiom shapes the native lane has PROVEN it can land here, "
+             "recency-weighted (the learned experience it ranks by)")
     native_mind_parser.add_argument("--json", action="store_true", help="Emit JSON")
     native_mind_parser.set_defaults(func=cmd_native_mind)
 

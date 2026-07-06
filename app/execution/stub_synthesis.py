@@ -5856,14 +5856,28 @@ def _native_mind_candidates(root: Path,
     list when the lane is disabled. A lazy import keeps the disabled path free of
     even importing the native module. Every candidate is a PROPOSAL: the caller
     still gates each one against the stub's pinned tests / doctests, so nothing
-    lands unverified. Deterministic (the module mines a sorted, de-duplicated
-    library and adapts positionally)."""
+    lands unverified.
+
+    Ordered corpus-frequency first (the dominant idiom), THEN re-ranked by
+    EXPERIENCE: a shape the native lane has actually landed here before — recency-
+    weighted and version-bounded (:mod:`app.engine.native_proof_memory`) — is tried
+    first, so proven idioms win over merely-common ones. With no experience yet the
+    order is unchanged (frequency), and re-ranking never changes WHAT can land
+    (the gate still decides) — only the order candidates are tried in.
+    Deterministic: a stable sort on a rounded score keeps the frequency order for
+    equal-experience shapes."""
     if not _native_mind_enabled():
         return []
-    from app.engine.native_synth import mind_candidate_exprs
+    from app.engine.native_proof_memory import decayed_reliability
+    from app.engine.native_synth import canonical_shape, mind_candidate_exprs
 
     sources = list(_native_mind_sources(str(root)))
-    return mind_candidate_exprs(sources, stub.params)
+    candidates = mind_candidate_exprs(sources, stub.params)
+    reliability = decayed_reliability(root)
+    if not reliability:
+        return candidates  # no experience yet — frequency order, unchanged
+    return sorted(candidates, key=lambda item: -reliability.get(
+        canonical_shape(stub.params, item[1]), 0.0))
 
 
 def _ordered_candidates(root: Path, test_files: list[str],

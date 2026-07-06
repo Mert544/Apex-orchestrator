@@ -24,11 +24,13 @@ non-stub is untouched).
 
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 from app.engine.develop_registry import ObjectiveSpec, register
 from app.execution.cross_file_rename import RenamePlan
 from app.execution.stub_synthesis import (
+    _native_mind_enabled,
     _purge_pyc,
     ambiguity_reason,
     fill_stub_body,
@@ -84,7 +86,70 @@ def plan_implement_stub(project_root: str | Path, module_rel: str) -> RenamePlan
     plan.new_contents[module_rel] = filled
     plan.edits_by_file[module_rel] = 1
     _scope_apply_gate(plan, root, module_rel, original, filled_names)
+    # Attribute native-only landings ONLY when the lane is enabled: with it off,
+    # no native body was ever offered, so nothing is native-only — skipping the
+    # detector keeps the default (and every dry-run) path zero-overhead.
+    if _native_mind_enabled():
+        plan.native_shapes = _landed_native_shapes(root, module_rel, original, filled)
     return plan
+
+
+def _returned_expr(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None:
+    """The unparsed single-return expression of ``fn`` (a leading docstring
+    skipped), or ``None`` — the exact shape a native fill writes (``return
+    <expr>``, a ternary included). Anything richer isn't a native single-expr
+    body, so it is not attributed to the native lane."""
+    body = list(fn.body)
+    if body and isinstance(body[0], ast.Expr) and isinstance(
+            getattr(body[0], "value", None), ast.Constant) and isinstance(
+            body[0].value.value, str):
+        body = body[1:]
+    if len(body) == 1 and isinstance(body[0], ast.Return) and body[0].value is not None:
+        try:
+            return ast.unparse(body[0].value)
+        except Exception:
+            return None
+    return None
+
+
+def _landed_native_shapes(root: Path, module_rel: str, original: str,
+                          filled: str) -> list[str]:
+    """The canonical idiom shapes this fill landed that ONLY the native
+    intelligence supplied — a body present in the project-learned candidates but
+    NOT in any fixed template for that stub. Pure/read-only and env-INDEPENDENT
+    (it mines the native candidates directly), so a body a template produced is
+    excluded: with the lane off, every landed body IS a template body and nothing
+    is attributed. This is the experience signal the apply engine records only
+    after the plan verifies and lands. Deterministic, sorted, de-duplicated."""
+    from app.engine.native_synth import canonical_shape, mind_candidate_exprs
+    from app.execution.stub_synthesis import (
+        _function_witnesses,
+        _native_mind_sources,
+        candidate_bodies,
+    )
+
+    try:
+        tree = ast.parse(filled)
+    except (SyntaxError, ValueError):
+        return []
+    filled_fns = {n.name: n for n in ast.walk(tree)
+                  if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    sources = list(_native_mind_sources(str(root)))
+    shapes: set[str] = set()
+    for stub in find_stub_functions(original):
+        fn = filled_fns.get(stub.name)
+        if fn is None:
+            continue
+        expr = _returned_expr(fn)
+        if expr is None:
+            continue
+        tests = pinned_test_files(root, module_rel, stub.name)
+        witnesses = _function_witnesses(root, tests, stub) if tests else []
+        template_exprs = {e for _label, e in candidate_bodies(stub, witnesses)}
+        native_exprs = {e for _label, e in mind_candidate_exprs(sources, stub.params)}
+        if expr in native_exprs and expr not in template_exprs:
+            shapes.add(canonical_shape(stub.params, expr))
+    return sorted(shapes)
 
 
 def _disclose_ambiguity(plan: RenamePlan, root: Path, module_rel: str,

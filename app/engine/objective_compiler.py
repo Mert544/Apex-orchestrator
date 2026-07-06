@@ -1141,6 +1141,13 @@ def _apply_one_move(result: CompileResult, mv: Move, root: str, current: float,
         if res.get("reason"):
             result.blocked.append(f"{mv.target}: {res['reason']}")
         return False, current
+    # The move LANDED and its suite verified: remember any native-only idiom shapes
+    # it landed, so the native lane ranks a proven idiom first next time. Recorded
+    # ONLY here (real apply, post-verify) — never during the dry-run plan build —
+    # and a no-op for every plan that landed no native-only body.
+    if getattr(plan, "native_shapes", None):
+        from app.engine.native_proof_memory import record_native_landing
+        record_native_landing(root, plan.native_shapes)
     nxt = max(0.0, current - 1)
     value = 0.0
     if value_aware:

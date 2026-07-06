@@ -73,6 +73,14 @@ class RenamePlan:
     # ``list(new_contents) + []`` is identical to today for every other plan, so
     # ``_verify_scoped`` is byte-for-byte unchanged. Sorted/deterministic.
     derived_from: list[str] = field(default_factory=list)
+    # The canonical native-intelligence idiom shapes (``p0 + p1`` …) this plan
+    # LANDED that ONLY a project-learned body supplied (no fixed template fit) —
+    # pure metadata the apply engine forwards to the experience memory
+    # (``native_proof_memory``) ONLY after the plan verifies and lands, so a
+    # proven idiom is remembered and ranked first next time. Empty for every plan
+    # that didn't land a native-only body (the common case), so this is inert for
+    # all existing objectives; never affects what the plan writes or how it gates.
+    native_shapes: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:

@@ -30,7 +30,21 @@ __all__ = [
     "learn_return_exemplars",
     "adapt_expr_to_params",
     "mind_candidate_exprs",
+    "canonical_shape",
 ]
+
+
+def canonical_shape(params: tuple[str, ...], expr: str) -> str:
+    """``expr`` with its params renamed to positional placeholders ``p0, p1, …`` —
+    the arity-normalised IDENTITY of an idiom, so ``a + b`` (from ``add(a, b)``)
+    and ``m + n`` (from ``plus(m, n)``) share one shape ``p0 + p1``. This is the key
+    the visibility report groups by AND the key the experience memory scores by, so
+    a body learned, proposed, and later remembered is the same idiom throughout.
+    Falls back to ``expr`` unchanged when the remap cannot apply (already
+    placeholder-shaped, or an arity the adapter declines)."""
+    canon = tuple(f"p{i}" for i in range(len(params)))
+    adapted = adapt_expr_to_params(params, expr, canon)
+    return adapted if adapted is not None else expr
 
 
 class ReturnExemplar:

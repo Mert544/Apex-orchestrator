@@ -29,6 +29,7 @@ __all__ = [
     "render_native_mind_markdown",
     "finishable_stubs",
     "render_finishable_stubs_markdown",
+    "render_experience_markdown",
 ]
 
 
@@ -215,4 +216,28 @@ def render_finishable_stubs_markdown(rows: list[dict]) -> str:
         lines += ["", f"## Also finishable by a fixed template ({len(template)})", ""]
         for r in template:
             lines.append(f"- `{r['module']}` :: `{r['stub']}` → `{r['body']}`")
+    return "\n".join(lines) + "\n"
+
+
+def render_experience_markdown(reliability: dict[str, float]) -> str:
+    """Render the native intelligence's learned EXPERIENCE — the idiom shapes it
+    has actually landed here, ranked by recency-weighted, version-bounded score
+    (:mod:`app.engine.native_proof_memory`). This is the "wisdom" view: not what
+    the corpus contains, but what has PROVEN to finish real code on this project.
+    An empty history renders an honest "no experience yet" line."""
+    lines = ["# Native intelligence — proven experience", ""]
+    if not reliability:
+        lines.append(
+            "Apex has landed no native-only bodies here yet, so it has no proven "
+            "experience to rank by — the native lane still orders by corpus "
+            "frequency until it earns some.")
+        return "\n".join(lines) + "\n"
+    ranked = sorted(reliability.items(), key=lambda kv: (-kv[1], kv[0]))
+    lines.append(
+        "Idiom shapes Apex has proven it can land here, most-reliable first "
+        "(recency-weighted; a shape retired by a `set_baseline` architectural "
+        "reset never appears):")
+    lines.append("")
+    for shape, score in ranked:
+        lines.append(f"- `{shape}` — score **{score:g}**")
     return "\n".join(lines) + "\n"
