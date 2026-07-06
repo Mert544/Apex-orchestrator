@@ -1264,6 +1264,23 @@ def _render_doc_examples(
     return lines
 
 
+def _oracle_assertion(call_args: str, oracle: str) -> str:
+    """The value-oracle assertion line for a captured return literal.
+
+    Uses an IDENTITY comparison for the three singletons ``None``/``True``/
+    ``False`` (``fn(...) is None``) and equality for every other literal. This
+    matters because the generated test is graded by the SAME ``ruff`` gate the
+    project runs: ``== None`` / ``== True`` / ``== False`` trip E711/E712, so a
+    naive ``== {oracle}`` would emit a test that fails lint the instant it lands.
+    The branch fires only when ``oracle`` is EXACTLY one of those three strings —
+    which (via :func:`_is_simple_literal`, exact-type, no subclasses) can only be
+    the genuine singleton — so ``is`` is always the correct, value-preserving
+    comparison, never a ``1 is True`` mismatch."""
+    if oracle in ("None", "True", "False"):
+        return f"    assert fn({call_args}) is {oracle}"
+    return f"    assert fn({call_args}) == {oracle}"
+
+
 def _render(
     module_stem: str,
     dotted: str,
@@ -1309,7 +1326,7 @@ def _render(
                 f"    fn = {dotted}.{name}",
                 "    assert callable(fn)",
                 "    # Value oracle: the captured real return value pins behaviour exactly.",
-                f"    assert fn({call_args}) == {oracle}",
+                _oracle_assertion(call_args, oracle),
             ]
             continue
         lines += [
