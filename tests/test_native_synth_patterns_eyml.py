@@ -41,13 +41,17 @@ def test_guarded_docstring_is_skipped():
     assert [(e.name, e.expr) for e in ex] == [("hi", "n if n > z else z")]
 
 
-def test_elif_chain_is_not_learned():
-    # A three-branch body is NOT one of the two clean shapes -> declined.
+def test_elif_chain_is_now_a_learned_third_shape():
+    # A three-branch elif chain (with a trailing fallthrough) is the THIRD
+    # finishable shape (see tests/test_native_synth_elif_eyml.py for the full
+    # elif-chain pattern space) -> collapses to a right-nested ternary, no
+    # longer declined.
     ex = learn_return_exemplars([
         "def t(a, b):\n    if a > b:\n        return a\n    elif a == b:\n"
         "        return b\n    return a\n",
     ])
-    assert ex == []
+    assert [(e.name, e.expr) for e in ex] == [
+        ("t", "a if a > b else b if a == b else a")]
 
 
 def test_free_name_in_a_branch_is_not_learned():

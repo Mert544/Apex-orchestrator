@@ -164,16 +164,132 @@ def _guarded_fallthrough_value(guard: ast.If, body: list[ast.stmt]) -> ast.expr 
     return None
 
 
+def _elif_chain_terminal_orelse(guard: ast.If) -> list[ast.stmt]:
+    """Walk down an elif chain starting at ``guard`` (an ``if`` whose ``orelse`` is
+    a nested ``elif``) to the ``orelse`` of its LAST link — an iterative walk
+    (bounded by the chain's own length), not recursion, so this stays a flat,
+    low-complexity helper. The result is either ``[]`` (the chain ends with no
+    final ``else``) or the final link's own ``orelse`` (``[Return(...)]`` for a
+    genuine ``else``, or something richer that disqualifies the shape)."""
+    node = guard
+    while len(node.orelse) == 1 and isinstance(node.orelse[0], ast.If):
+        node = node.orelse[0]
+    return node.orelse
+
+
+def _elif_link_value(if_node: ast.If, tail: ast.expr | None) -> ast.expr | None:
+    """The whole elif chain starting at ``if_node`` — ``if T: return A`` plus
+    everything chained in its ``orelse`` — turned into a right-nested
+    ``ast.IfExp``, using ``tail`` as the innermost value once the chain runs out
+    of ``elif``/``else`` links. ``None`` when any branch along the chain is not a
+    sole ``return <expr>`` (a bare return, a multi-statement branch, or an
+    ``else`` with more than one statement).
+
+    ITERATIVE, not recursive: it collects each ``(test, value)`` link walking the
+    chain down, then folds them right around the innermost fallback. A
+    deep/dispatch-table-sized chain (mined from ANY source file in the corpus)
+    therefore can never overflow the stack here — the only remaining recursion is
+    ``ast.unparse``'s own, which the caller already guards (fails closed)."""
+    links: list[tuple[ast.expr, ast.expr]] = []
+    node = if_node
+    while True:
+        value = _sole_return_value(node.body)
+        if value is None:
+            return None
+        links.append((node.test, value))
+        orelse = node.orelse
+        if len(orelse) == 1 and isinstance(orelse[0], ast.If):
+            node = orelse[0]
+            continue
+        if not orelse:
+            fallback = tail
+        elif len(orelse) == 1:
+            fallback = _sole_return_value(orelse)
+        else:
+            fallback = None
+        break
+    if fallback is None:
+        return None
+    result: ast.expr = fallback
+    for test, value in reversed(links):
+        result = ast.IfExp(test=test, body=value, orelse=result)
+    return result
+
+
+def _elif_chain_tail(body: list[ast.stmt], guard: ast.If) -> tuple[ast.expr | None, bool]:
+    """Resolve an elif chain's trailing fallthrough value and validate the body
+    is a complete, clean shape — extracted so :func:`_elif_chain_return_expr`
+    stays within the complexity budget.
+
+    Returns ``(tail, ok)``. ``ok`` is ``False`` for any non-conforming body: a
+    trailing statement that isn't a sole ``return`` (or extra statements around
+    the chain), a chain with neither a final ``else`` nor a trailing
+    fallthrough (incomplete), or a trailing ``return`` after a chain that ALREADY
+    has a final ``else`` (dead code). ``tail`` is the trailing ``return C`` value
+    when present, else ``None`` (the chain's own final ``else`` supplies the
+    innermost value)."""
+    tail = None
+    if len(body) == 2:
+        tail = _sole_return_value(body[1:])
+        if tail is None:
+            return None, False
+    elif len(body) != 1:
+        return None, False
+    terminal = _elif_chain_terminal_orelse(guard)
+    if tail is None and not terminal:
+        return None, False  # no final else and no trailing fallthrough -> incomplete
+    if tail is not None and terminal:
+        return None, False  # chain already has a final else -> trailing return is dead
+    return tail, True
+
+
+def _elif_chain_return_expr(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None:
+    """The equivalent right-nested-ternary source for an ELIF-CHAIN return body —
+    the next-most-common finishable shape after a plain return and a two-branch
+    guard:
+
+    * ``if T1: return A`` / ``elif T2: return B`` / ``else: return C``
+    * ``if T1: return A`` / ``elif T2: return B`` / (trailing) ``return C``
+
+    generalised to an arbitrary-length chain ``T1..Tn`` with a final
+    ``else``/trailing fallthrough, where EVERY branch is a sole ``return <expr>``.
+    Both collapse to ``A if T1 else (B if T2 else C)`` — built by right-nesting
+    ``ast.IfExp`` (:func:`_elif_link_value`) and unparsing once, exactly like
+    :func:`_guarded_return_expr` does for the 2-branch case. ``None`` for anything
+    richer or non-conforming: a branch that isn't a sole return, a chain with no
+    final else/fallthrough, a trailing statement after a chain that ALREADY has a
+    final else (dead code — not this clean shape), statements around the chain,
+    or a body with no ``elif`` link at all (a plain if/else is
+    :func:`_guarded_return_expr`'s shape, not this one)."""
+    body = _strip_docstring(list(node.body))
+    if not body or not isinstance(body[0], ast.If):
+        return None
+    guard = body[0]
+    if not (len(guard.orelse) == 1 and isinstance(guard.orelse[0], ast.If)):
+        return None  # no elif link -> not this shape (plain if/else, if any)
+    tail, ok = _elif_chain_tail(body, guard)
+    if not ok:
+        return None
+    value = _elif_link_value(guard, tail)
+    if value is None:
+        return None
+    try:
+        return ast.unparse(value)
+    except Exception:
+        return None
+
+
 def learn_return_exemplars(sources: list[str]) -> list[ReturnExemplar]:
     """Mine every ``return <expr>`` body from ``sources`` (the project's own code)
     into a deterministic, de-duplicated, sorted library of candidate bodies.
 
     A function contributes an exemplar only when it has simple positional params
-    and a finishable body — a single ``return <expr>`` OR a two-branch guarded
-    return (``if T: return A; return B`` -> ``A if T else B``) — AND the resulting
-    expression references ONLY those params (a self-contained rule the native
-    intelligence can safely transplant to another function of the same arity — no
-    free names, no globals)."""
+    and a finishable body — a single ``return <expr>``, a two-branch guarded
+    return (``if T: return A; return B`` -> ``A if T else B``), OR an elif-chain
+    return (``if T1: return A; elif T2: return B; else: return C`` -> ``A if T1
+    else (B if T2 else C)``) — AND the resulting expression references ONLY those
+    params (a self-contained rule the native intelligence can safely transplant to
+    another function of the same arity — no free names, no globals)."""
     seen: set[ReturnExemplar] = set()
     for source in sources:
         try:
@@ -186,7 +302,8 @@ def learn_return_exemplars(sources: list[str]) -> list[ReturnExemplar]:
             params = _positional_params(node)
             if not params:
                 continue
-            expr = _single_return_expr(node) or _guarded_return_expr(node)
+            expr = (_single_return_expr(node) or _guarded_return_expr(node)
+                    or _elif_chain_return_expr(node))
             if expr is None:
                 continue
             if not _expr_uses_only(expr, set(params)):

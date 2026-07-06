@@ -161,6 +161,14 @@ class CompileResult:
     # ``to_dict()`` is byte-identical there (mirrors ``withheld``/``committed``).
     verification_unavailable: str = ""
     pytest_interpreter: str = ""
+    # LEARNED-AVOID (opt-in, ``avoid_aware``): one human description per move
+    # target this campaign SKIPPED because the SAME counterfactual avoid-guard the
+    # maintain path's closed loop consults (``idea_action_bridge._learned_skip``)
+    # flagged its ``(operator, module)`` signature as predictably rollback-prone —
+    # saving a wasted apply+rollback. Reported ONCE per target (never re-announced
+    # on a later pass). Empty for every run that did not arm ``avoid_aware`` (the
+    # default), so ``to_dict()`` stays byte-identical (mirrors ``withheld``).
+    avoided: list[str] = field(default_factory=list)
 
     @property
     def improved(self) -> bool:
@@ -182,6 +190,11 @@ class CompileResult:
         # campaign that didn't arm the gate (mirrors how ``value`` is additive).
         if self.withheld:
             d["withheld"] = list(self.withheld)
+        # Purely ADDITIVE: appears only when the avoid-aware guard actually
+        # skipped a move (see ``avoided`` docstring above), so a campaign that
+        # never armed it is byte-identical (mirrors ``withheld``).
+        if self.avoided:
+            d["avoided"] = list(self.avoided)
         # Purely ADDITIVE: appears only when a caller actually committed the
         # result (see ``committed``/``commit_hash`` docstring above).
         if self.committed:
@@ -1005,6 +1018,71 @@ def _risk_ordered(moves: list[Move], root: str | Path) -> list[Move]:
         return moves
 
 
+def _avoid_flagged_targets(moves: list[Move], root: str | Path) -> set[str]:
+    """The target of every move whose ``(operator, module)`` signature the
+    counterfactual avoid-guard flags as predictably rollback-prone.
+
+    The SAME evidence-backed signal the maintain path's closed loop already acts
+    on (:func:`app.engine.idea_action_bridge.IdeaActionBridge._learned_skip`, via
+    :func:`app.engine.counterfactual_learning.should_avoid` over
+    ``failure_signatures``) — mirrored here rather than reinvented.
+
+    Best-effort at the edge, exactly like :func:`_risk_ordered`: any failure
+    (missing/unreadable proof history) returns an empty set rather than raising.
+    An empty/missing history flags nothing — honest: no evidence, no skip — so a
+    fresh project is unaffected even with the guard armed."""
+    try:
+        from app.engine.counterfactual_learning import (
+            failure_signatures,
+            module_traits,
+            should_avoid,
+        )
+        from app.engine.proof_history import load_proof_history
+
+        signatures = failure_signatures(load_proof_history(root))
+        if not signatures:
+            return set()
+        return {
+            mv.target for mv in moves
+            if should_avoid(signatures, mv.operator, module_traits(_move_module(mv)))
+        }
+    except Exception:
+        return set()
+
+
+def _initial_skip_targets(covered_only: bool, avoid_aware: bool) -> set | None:
+    """The campaign's initial ``skip_targets`` channel (see ``_apply_one_move``):
+    an empty, armed set when EITHER the covered-only sweep or the avoid-aware
+    guard needs it, else ``None`` — the historical no-op that keeps the skip
+    check inert, so a plain campaign's apply loop stays byte-identical."""
+    return set() if (covered_only or avoid_aware) else None
+
+
+def _arm_avoid_skip(result: CompileResult, skip_targets: set | None,
+                    moves: list[Move], root: str, avoid_aware: bool) -> None:
+    """OPT-IN (``avoid_aware``): pre-populate ``skip_targets`` with this pass's
+    avoid-flagged move targets, so ``_apply_one_move``'s EXISTING skip check
+    (untouched — see its ``skip_targets`` gate) declines them before ever
+    building a plan or touching the suite. Reuses the covered-only skip channel
+    rather than adding a parallel one.
+
+    Each NEWLY-flagged target is recorded once on ``result.avoided`` (a target
+    already in ``skip_targets`` from an earlier pass — avoid-flagged or
+    covered-only-withheld — is never re-announced), mirroring how a covered-only
+    withhold is reported once then silently re-skipped.
+
+    No-op when ``avoid_aware`` is off (the default) or ``skip_targets`` is
+    ``None`` (unarmed), so a default campaign is byte-identical."""
+    if not avoid_aware or skip_targets is None:
+        return
+    new = _avoid_flagged_targets(moves, root) - skip_targets
+    for target in sorted(new):
+        result.avoided.append(
+            f"{target}: skipped — learned-avoid (proof-of-fix history predicts "
+            f"rollback)")
+    skip_targets.update(new)
+
+
 def _ordered_candidates(generate: Callable[[str | Path], list[Move]], root: str,
                         scope_module: str | None, memory: Any,
                         last_operator: str, value_aware: bool = False,
@@ -1205,6 +1283,7 @@ def _run_pass(result: CompileResult, moves: list[Move], root: str, current: floa
               skip_targets: set | None = None,
               baseline_failing: frozenset[str] | None = None,
               realization: dict[str, float] | None = None,
+              avoid_aware: bool = False,
               ) -> tuple[bool, float, str]:
     """Apply every move in one pass's scan that still lands, in order.
 
@@ -1229,7 +1308,13 @@ def _run_pass(result: CompileResult, moves: list[Move], root: str, current: floa
 
     ``realization`` (see :func:`_ordered_candidates`) is forwarded to
     ``_apply_one_move`` so a landed step's disclosed value reflects the operator's
-    PROVEN track record. ``None`` (the default) ⇒ byte-identical to today."""
+    PROVEN track record. ``None`` (the default) ⇒ byte-identical to today.
+
+    AVOID-AWARE (opt-in): before this pass's moves are attempted, arms
+    ``skip_targets`` with any move the counterfactual avoid-guard flags (see
+    :func:`_arm_avoid_skip`) — the develop-loop sibling of the maintain path's
+    closed loop. Default off ⇒ byte-identical to today."""
+    _arm_avoid_skip(result, skip_targets, moves, root, avoid_aware)
     progressed = False
     for mv in moves:
         if len(result.steps) >= max_steps:
@@ -1382,6 +1467,7 @@ def compile_objective(project_root: str | Path, objective: str = "dead-params",
                       covered_only: bool = False,
                       baseline_failing: frozenset[str] | None = None,
                       risk_aware: bool = False,
+                      avoid_aware: bool = False,
                       ) -> CompileResult:
     """Greedily compose verified moves toward ``objective``.
 
@@ -1423,7 +1509,20 @@ def compile_objective(project_root: str | Path, objective: str = "dead-params",
     set in to avoid a second probe; an EMPTY set means a proven-GREEN baseline, so
     the gate stays absolute-green and the run is byte-identical. A fully-green
     baseline (the common case, and Apex's own suite) captures an empty set ⇒
-    absolute-green ⇒ unchanged."""
+    absolute-green ⇒ unchanged.
+
+    ``avoid_aware`` (DEFAULT False = byte-identical to today) is the develop
+    loop's sibling of the maintain path's closed loop
+    (``idea_action_bridge._learned_skip``): a move whose ``(operator, module)``
+    signature the counterfactual avoid-guard (``counterfactual_learning.
+    should_avoid`` over ``failure_signatures``) flags as predictably rollback-
+    prone is SKIPPED — never even plan-built — before it can waste an
+    apply+rollback, and recorded once on ``result.avoided``. Distinct from
+    ``risk_aware`` (which only REORDERS moves, low-risk first, and never drops
+    one): the two compose freely — risk-aware still tries every move, just in a
+    safer order, while avoid-aware refuses the ones with strong rollback
+    evidence outright. An empty/missing proof history flags nothing, so a fresh
+    project's campaign is unaffected even with the guard armed."""
     objectives = _objectives_map()
     objective_name, blocked = _resolve_compile_target(objective, objectives)
     if objective_name is None:
@@ -1506,10 +1605,11 @@ def compile_objective(project_root: str | Path, objective: str = "dead-params",
     # lands on a project red on checkout while a true regression is still rolled
     # back. None on a green baseline / dry run ⇒ absolute-green, byte-identical.
     campaign_baseline = _campaign_baseline(root, apply, verify, baseline_failing)
-    # COVERED-ONLY: the per-campaign set of already-withheld move targets, so an
-    # uncovered candidate that re-surfaces every pass is skipped (not re-run/double
-    # -counted). None when the gate is off ⇒ the apply loop is byte-identical.
-    skip_targets: set | None = set() if covered_only else None
+    # COVERED-ONLY / AVOID-AWARE: the per-campaign set of already-withheld and/or
+    # avoid-flagged move targets, so a candidate that re-surfaces every pass is
+    # skipped (not re-run/double-counted or re-announced). None when BOTH gates
+    # are off ⇒ the apply loop is byte-identical (see ``_initial_skip_targets``).
+    skip_targets: set | None = _initial_skip_targets(covered_only, avoid_aware)
     for _pass in range(max_steps + 1):
         if len(result.steps) >= max_steps:
             break
@@ -1519,7 +1619,7 @@ def compile_objective(project_root: str | Path, objective: str = "dead-params",
         progressed, current, last_operator = _run_pass(
             result, moves, root, current, max_steps, verify, effective_scope,
             last_operator, memory, value_aware, min_move_value, covered_only,
-            skip_targets, campaign_baseline, realization)
+            skip_targets, campaign_baseline, realization, avoid_aware)
         if not progressed:
             break
 

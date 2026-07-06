@@ -47,6 +47,7 @@ class RenderedSections:
     memory_html: str = ""
     jsscope_html: str = ""
     nativemind_html: str = ""
+    manifesto_html: str = ""
 
 
 def _esc(value: Any) -> str:
@@ -1462,4 +1463,58 @@ def _native_mind_section(project_root: str) -> str:
             f"stub by transplanting one of these, verified by the same never-fake-green "
             f"gate.</p><h4>Dominant idioms</h4><ul class='nativemind'>{idiom_lis}</ul>")
     return _card("nativemind", "🧠", "Native intelligence — learned idioms", body)
+
+
+def _manifesto_law_lists(manifesto: dict[str, Any]) -> str:
+    """Short ``<ul>`` lists of the top few laws under each heading — extracted
+    so :func:`_manifesto_section` stays within the complexity budget.
+
+    Proven idioms are rendered through :func:`app.engine.manifesto._shape_label`
+    — the SAME humaniser the vault/CLI markdown uses — so the card shows
+    ``p0 + p1 (2-arg)`` rather than leaking the internal arity-prefixed key
+    (``2:p0 + p1``); the two mirrored surfaces stay consistent."""
+    from app.engine.manifesto import _shape_label
+
+    groups = [
+        ("⛔ Avoid", [str(a) for a in (manifesto.get("avoid") or [])[:5]]),
+        ("⚠ Fragile", [f"{r['module']} — {r['rollbacks']}/{r['total']} rolled back"
+                        for r in (manifesto.get("fragile") or [])[:5]]),
+        ("✅ Trust", [f"{r['action']} — reliability {r['score']:g}"
+                      for r in (manifesto.get("trust") or [])[:5]]),
+        ("🧠 Proven idioms", [f"{_shape_label(r['shape'])} — score {r['score']:g}"
+                              for r in (manifesto.get("proven_idioms") or [])[:5]]),
+    ]
+    blocks = [
+        f"<h4>{_esc(title)}</h4><ul class='manifesto'>"
+        f"{''.join(f'<li>{_esc(i)}</li>' for i in items)}</ul>"
+        for title, items in groups if items
+    ]
+    return "".join(blocks)
+
+
+def _manifesto_section(project_root: str) -> str:
+    """The living manifesto (:mod:`app.engine.manifesto`), made visible — the
+    architectural laws (AVOID / TRUST / FRAGILE modules / proven idioms) Apex
+    has synthesised from its own scattered proof-carrying experience on THIS
+    project. Renders only when at least one law has been legislated; a fresh
+    project with no ``.apex`` history (nothing landed or rolled back yet) shows
+    nothing. Cheap (a few artifact reads via the existing learners),
+    deterministic, zero tokens."""
+    try:
+        from app.engine.manifesto import derive_manifesto
+
+        manifesto = derive_manifesto(project_root)
+    except Exception:
+        return ""
+    avoid = manifesto.get("avoid") or []
+    trust = manifesto.get("trust") or []
+    fragile = manifesto.get("fragile") or []
+    idioms = manifesto.get("proven_idioms") or []
+    if not (avoid or trust or fragile or idioms):
+        return ""
+    chips = (f"{_chip('avoid', len(avoid))}{_chip('fragile', len(fragile))}"
+             f"{_chip('trust', len(trust))}{_chip('proven idioms', len(idioms))}")
+    body = f"<div class='chips'>{chips}</div>{_manifesto_law_lists(manifesto)}"
+    return _card("manifesto", "📜",
+                 "Living manifesto — architectural laws learned here", body)
 

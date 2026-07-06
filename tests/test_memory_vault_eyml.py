@@ -52,14 +52,17 @@ def test_bare_project_yields_all_absent_sections(tmp_path: Path):
     # CONSCIOUS PIN MOVE (living-assistant polish): the section set gains
     # "epistemic_memory" — the seventh section, mirroring the
     # `.epistemic/memory.json` artifact (6 -> 7; see
-    # tests/test_vault_epistemic_section_eyml.py for its contract).
+    # tests/test_vault_epistemic_section_eyml.py for its contract) — and then
+    # "manifesto" — the eighth, DERIVED section synthesising the project's learned
+    # architectural laws (7 -> 8; see tests/test_vault_manifesto_eyml.py).
     assert set(view["sections"]) == {
         "idea_memory", "dream_journal", "dream_digest",
-        "proof_of_fix", "track_record", "agenda", "epistemic_memory"}
+        "proof_of_fix", "track_record", "agenda", "epistemic_memory",
+        "manifesto"}
     assert all(not s["present"] for s in view["sections"].values())
     md = render_vault_markdown(view)
-    # CONSCIOUS PIN MOVE: 0/6 -> 0/7 (the epistemic-memory section joined).
-    assert "0/7 memory store(s) present" in md
+    # CONSCIOUS PIN MOVE: 0/6 -> 0/7 (epistemic) -> 0/8 (manifesto joined).
+    assert "0/8 memory store(s) present" in md
     assert "No memory yet" in md
 
 
@@ -140,9 +143,10 @@ def test_cmd_vault_refresh_writes_and_prints_summary(tmp_path: Path, capsys):
         target=str(tmp_path), json=False, refresh=True))
     assert rc == 0
     out = capsys.readouterr().out
-    # CONSCIOUS PIN MOVE: 3/6 -> 3/7 (the epistemic-memory section joined the
-    # vault; no .epistemic artifact is seeded here, so the present-count stays 3).
-    assert "3/7 memory store(s) present" in out
+    # CONSCIOUS PIN MOVE: 3/6 -> 3/7 (epistemic) -> 3/8 (manifesto joined the
+    # vault; neither a .epistemic artifact nor any proof-of-fix history is seeded
+    # here, so the derived manifesto is absent and the present-count stays 3).
+    assert "3/8 memory store(s) present" in out
     assert (tmp_path / VAULT_REL).exists()
 
 

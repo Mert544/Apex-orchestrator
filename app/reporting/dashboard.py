@@ -277,6 +277,7 @@ from app.reporting.dashboard_sections import (  # noqa: F401  (re-exported)
     _kind_badge_label,
     _kpi,
     _learned_section,
+    _manifesto_section,
     _memory_vault_section,
     _native_mind_section,
     _outscope_section,
@@ -598,6 +599,7 @@ def _middle_nav_links(
         (_learned_has_entries(learned), ("learned", "Learned")),
         (bool(sections.memory_html), ("memory", "Memory")),
         (bool(sections.nativemind_html), ("nativemind", "Native mind")),
+        (bool(sections.manifesto_html), ("manifesto", "Manifesto")),
         (bool(sections.trackrecord_html), ("trackrecord", "Track record")),
         (bool(sections.outscope_html), ("outscope", "Out of scope")),
         (bool(sections.jsscope_html), ("jsscope", "JS/TS")),
@@ -660,6 +662,7 @@ def _page_sections(
             _learned_section(learned),
             sections.memory_html,
             sections.nativemind_html,
+            sections.manifesto_html,
             sections.trackrecord_html,
             sections.outscope_html,
             sections.jsscope_html,
@@ -689,11 +692,14 @@ def _render_html(project_root, profile, findings, idea_report, action_plan, reas
         outscope_html=_outscope_section(project_root),
         # "Living-cell" cards, rendered once (each gates a nav link and appears in
         # the body): the full memory vault (L5), the native intelligence's learned
-        # idioms (inner-intelligence layer), and the JS/TS scope (L1). Each
-        # self-gates to "" when absent, so a fresh / library-idiom-less / Python-only
-        # project stays byte-identical to before.
+        # idioms (inner-intelligence layer), the learned manifesto (the
+        # architectural laws synthesised from that same proof-carrying
+        # experience), and the JS/TS scope (L1). Each self-gates to "" when
+        # absent, so a fresh / library-idiom-less / lawless / Python-only project
+        # stays byte-identical to before.
         memory_html=_memory_vault_section(project_root),
         nativemind_html=_native_mind_section(project_root),
+        manifesto_html=_manifesto_section(project_root),
         jsscope_html=_js_scope_section(project_root),
     )
     links = _nav_links(
