@@ -718,6 +718,8 @@ def test_north_star_and_soundness_audits_pass():
 
 # --- must-refuse on the Java soundness-corpus fixture (the reassigned-local trap) --
 
+@pytest.mark.timeout(600)  # heavy JVM corpus sweep: 120s global fits fast
+# tests, not a javac/JVM cold-start under -j4 gate CPU contention (no assertion changed)
 def test_refuses_on_java_reassigned_local_corpus_shape():
     # The standing soundness corpus carries a Java reassigned-local trap shape: a local
     # variable declared as a direct block statement WITH an initializer that LOOKS
