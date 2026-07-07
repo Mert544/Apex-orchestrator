@@ -18,6 +18,168 @@ from app.cli_common import _get_project_root
 if TYPE_CHECKING:
     from app.tools.js_project_profile import JsProjectProfile
 
+# --------------------------------------------------------------------------- #
+# quickstart — the 60-second on-ramp: one READ-ONLY command that composes
+# EXISTING engines (grade, the idea/roadmap engine, the action bridge's
+# report-mode scout) to show a new user Apex's value on THEIR project, in one
+# motion. No new analysis is invented here.
+# --------------------------------------------------------------------------- #
+
+_QUICKSTART_BANNER = "Zero-token · offline · deterministic · never-fake-green."
+
+# Small budget so the idea/roadmap pass stays cheap — the same cost class as
+# `apex auto`'s scout, deliberately smaller (no --deep synthesis, either).
+_QUICKSTART_MAX_IDEAS = 20
+_QUICKSTART_DEPTH = 1
+_QUICKSTART_BREADTH = 3
+
+
+def _quickstart_health(target: Path) -> dict:
+    """The project's grade — the exact DATA ``apex grade`` renders (reuses
+    ``health_score.grade``, never ``cmd_grade``), reduced to a score/letter/
+    one-line breakdown. Defensively wrapped: a brand-new/unreadable project
+    still yields an honest clean-bill grade instead of raising."""
+    from app.engine.health_score import grade
+
+    try:
+        h = grade(str(target))
+    except Exception:
+        return {"score": 100, "letter": "A+",
+                 "breakdown": "no gradeable Python code found"}
+    costly = sorted((c for c in h.components if c.points_lost > 0),
+                    key=lambda c: -c.points_lost)
+    breakdown = ("; ".join(f"{c.name} -{c.points_lost}" for c in costly[:3])
+                 if costly else "clean bill of health — nothing is costing points")
+    return {"score": h.score, "letter": h.letter, "breakdown": breakdown}
+
+
+def _quickstart_report(target: Path):
+    """Run the SAME cheap idea-engine path ``apex auto`` scouts with, at a
+    smaller budget. Defensively wrapped so an empty/brand-new project yields
+    ``None`` (an honest zero-opportunity report) instead of raising."""
+    from app.engine.idea_permutation import IdeaPermutationEngine
+
+    try:
+        return IdeaPermutationEngine(
+            config={"max_total_ideas": _QUICKSTART_MAX_IDEAS,
+                    "max_idea_depth": _QUICKSTART_DEPTH,
+                    "breadth": _QUICKSTART_BREADTH},
+            project_root=str(target),
+        ).run()
+    except Exception:
+        return None
+
+
+def _quickstart_opportunities(report) -> list[dict]:
+    """Top-3 roadmap items — reuses ``RoadmapSynthesizer().build(report)``
+    (the same synthesis ``cmd_auto`` builds) and ``best_first_move``'s own
+    tie-break key (value/effort, then phase, then value) to rank across
+    phases, so this invents no new prioritization."""
+    if report is None:
+        return []
+    from app.engine.idea_roadmap import PHASE_ORDER, RoadmapSynthesizer
+
+    try:
+        roadmap = RoadmapSynthesizer().build(report)
+    except Exception:
+        return []
+    candidates = [i for phase in roadmap.phases for i in phase.items]
+    if not candidates:
+        return []
+    phase_rank = {name: n for n, name in enumerate(PHASE_ORDER)}
+    ranked = sorted(candidates, key=lambda i: (
+        -round(i.value / max(i.effort, 0.1), 6),
+        phase_rank.get(i.phase, len(PHASE_ORDER)),
+        -i.value, i.effort, -i.roi, i.branch_path,
+    ))
+    return [{"branch_path": i.branch_path, "title": i.title, "phase": i.phase,
+             "roi": i.roi} for i in ranked[:3]]
+
+
+def _quickstart_landable(report, target: Path) -> int:
+    """How many safe, executable moves are available right now — the SAME
+    scout ``cmd_auto`` runs (``IdeaActionBridge().plan_roadmap(report,
+    mode="report", ...)``): report mode, no draft/apply, so this never
+    writes anywhere."""
+    if report is None:
+        return 0
+    from app.engine.idea_action_bridge import IdeaActionBridge
+
+    try:
+        plan = IdeaActionBridge().plan_roadmap(
+            report, mode="report", project_root=str(target))
+        return plan.stats.get("executable_steps", 0)
+    except Exception:
+        return 0
+
+
+def _quickstart_next_steps(target_arg: str) -> list[str]:
+    """Three copy-paste commands, parameterized on the SAME ``--target`` value
+    the user passed in (so they are valid to paste verbatim, whatever the
+    current shell's cwd is)."""
+    return [
+        f"apex grade --target {target_arg} --diff",
+        f"apex develop --target {target_arg} --apply",
+        f"apex dashboard --target {target_arg}",
+    ]
+
+
+def _render_quickstart(data: dict) -> list[str]:
+    """Render the human-readable report from the SAME dict ``--json`` emits."""
+    g = data["grade"]
+    lines = [_QUICKSTART_BANNER, "",
+             f"## Health: {g['letter']}  ({g['score']}/100)",
+             data["breakdown"], "",
+             "## Top opportunities (what to develop next)"]
+    if data["top_opportunities"]:
+        for n, op in enumerate(data["top_opportunities"], 1):
+            lines.append(f"{n}. `{op['branch_path']}` {op['title']} "
+                        f"({op['phase']} · ROI {op['roi']})")
+    else:
+        lines.append("_No opportunities yet — this project may be new or very small._")
+    lines.append("")
+    lines.append("## What Apex can land right now")
+    lines.append(
+        f"{data['landable_count']} safe move(s) available — preview with "
+        "`apex develop` (report-only), apply with `apex develop --apply` "
+        "(each test-verified, auto-rolled-back).")
+    lines.append("")
+    lines.append("## Next steps")
+    lines.extend(f"- `{cmd}`" for cmd in data["next_steps"])
+    return lines
+
+
+def cmd_quickstart(args: argparse.Namespace) -> int:
+    """The 60-second on-ramp, as ONE motion: health grade, top opportunities,
+    and what Apex can safely land right now — composed entirely from existing,
+    already-deterministic engines (``health_score.grade``, the idea/roadmap
+    engine, the action bridge's report-mode scout).
+
+    STRICTLY READ-ONLY: every call below is report-mode / draft-off, so this
+    never applies a fix and never snapshots — a pure measurement, like
+    ``apex grade``. Deterministic: no clock/random touches the output, so the
+    same project yields byte-identical output run after run.
+    """
+    raw_target = getattr(args, "target", "") or ""
+    target = Path(raw_target).resolve() if raw_target else _get_project_root()
+
+    health = _quickstart_health(target)
+    report = _quickstart_report(target)
+    data = {
+        "grade": {"score": health["score"], "letter": health["letter"]},
+        "breakdown": health["breakdown"],
+        "top_opportunities": _quickstart_opportunities(report),
+        "landable_count": _quickstart_landable(report, target),
+        "next_steps": _quickstart_next_steps(raw_target or "."),
+    }
+
+    if getattr(args, "json", False):
+        print(json.dumps(data, indent=2))
+    else:
+        print("\n".join(_render_quickstart(data)))
+    return 0
+
+
 def cmd_explain(args: argparse.Namespace) -> int:
     """Explain why a specific idea scored what it did — the engine's reasoning."""
     from app.engine.idea_explain import explain_idea, render_explanation_markdown
@@ -1553,8 +1715,19 @@ def cmd_js_scope(args: argparse.Namespace) -> int:
 
 
 def register_parsers(subparsers) -> None:
-    """Register the insight family's subcommands: grade, impact, brief, dream,
-    outcomes, recipes, changelog, explain, objectives."""
+    """Register the insight family's subcommands: quickstart, grade, impact,
+    brief, dream, outcomes, recipes, changelog, explain, objectives."""
+    # quickstart — the 60-second on-ramp: health + top opportunities + what's
+    # safely landable right now, composed from existing engines, read-only
+    quickstart_parser = subparsers.add_parser(
+        "quickstart",
+        help="60-second on-ramp: health grade, top opportunities, and what "
+             "Apex can safely land right now — one read-only command",
+    )
+    quickstart_parser.add_argument("--target", default="", help="Target project root")
+    quickstart_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    quickstart_parser.set_defaults(func=cmd_quickstart)
+
     # grade — single project health grade (A-F)
     grade_parser = subparsers.add_parser(
         "grade", help="Give the project a single health grade (A-F) with a breakdown",
