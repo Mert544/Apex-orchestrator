@@ -152,6 +152,49 @@ def test_render_none_when_nothing_to_export(tmp_path: Path):
     assert render_init_source(plan, "") is None
 
 
+def test_existing_all_is_replaced_not_duplicated(tmp_path: Path):
+    # REGRESSION: an __init__ that ALREADY declares a (curated) __all__ AND has a
+    # new sibling export to wire must yield exactly ONE __all__ — the merged
+    # superset — not the old one left dead above a freshly-appended second block.
+    # (Found wiring an external package with a hand-curated __all__: Apex emitted a
+    # duplicate __all__, the first clobbered by the second.)
+    init = (
+        "from .aaa import alpha\n\n"
+        "__all__ = [\n"
+        '    "alpha",\n'
+        "]\n"
+    )
+    pkg = _pkg(tmp_path, {
+        "aaa.py": "def alpha():\n    return 1\n",
+        "bbb.py": "def beta():\n    return 2\n",  # a NEW export, not yet wired
+    }, init=init)
+    plan = collect_package_exports(pkg, init)
+    out = render_init_source(plan, init)
+    assert out is not None
+    # Exactly one __all__ assignment — the duplicate is the bug.
+    assert out.count("__all__ = [") == 1
+    # The merged list is a superset: the curated name AND the new one, sorted.
+    assert out == (
+        "from .aaa import alpha\n"
+        "\n"
+        "from .bbb import beta\n"
+        "\n"
+        "__all__ = [\n"
+        '    "alpha",\n'
+        '    "beta",\n'
+        "]\n"
+    )
+    # And the rendered candidate re-parses (valid syntax, single binding).
+    import ast as _ast
+    tree = _ast.parse(out)
+    all_assigns = [
+        n for n in tree.body
+        if isinstance(n, _ast.Assign)
+        and any(isinstance(t, _ast.Name) and t.id == "__all__" for t in n.targets)
+    ]
+    assert len(all_assigns) == 1
+
+
 # --- plan layer: full wire, no-op, refusal -----------------------------------
 
 def test_plan_wires_public_symbols(tmp_path: Path):

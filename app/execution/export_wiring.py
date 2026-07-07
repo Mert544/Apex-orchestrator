@@ -241,6 +241,30 @@ def collect_package_exports(package_dir: str | Path, init_source: str) -> WirePl
     return plan
 
 
+def _strip_top_level_all(source: str) -> str:
+    """Return ``source`` with its top-level ``__all__ = [...]`` assignment removed.
+
+    :func:`render_init_source` re-emits a freshly-merged ``__all__``; if the existing
+    ``__init__`` already declared one, keeping it in the header would leave TWO
+    top-level ``__all__`` assignments (the first dead — a real bug seen wiring an
+    external package that had a curated ``__all__`` AND new sibling exports). The
+    removed names are NOT lost: :func:`rendered_all_names` folds an existing
+    ``__all__``'s entries into the new list (a superset). Unparseable / no-``__all__``
+    source is returned unchanged."""
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, RecursionError, MemoryError):
+        return source
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == "__all__" for t in node.targets
+        ) and isinstance(node.value, (ast.List, ast.Tuple)) and node.end_lineno:
+            lines = source.splitlines(keepends=True)
+            del lines[node.lineno - 1:node.end_lineno]
+            return "".join(lines)
+    return source
+
+
 def render_init_source(plan: WirePlan, existing_init: str) -> str | None:
     """Render the full candidate ``__init__.py`` text for a resolved plan.
 
@@ -256,7 +280,9 @@ def render_init_source(plan: WirePlan, existing_init: str) -> str | None:
         return None
 
     lines: list[str] = []
-    header = existing_init.rstrip("\n")
+    # Drop any existing top-level ``__all__`` first: we re-emit a merged one below,
+    # so keeping the old would leave a duplicate (dead) ``__all__`` assignment.
+    header = _strip_top_level_all(existing_init).rstrip("\n")
     if header.strip():
         lines.append(header)
         lines.append("")
