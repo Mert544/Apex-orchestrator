@@ -1,0 +1,80 @@
+name: Apex Autofix
+
+# Turns Apex from a REVIEWER into a FIXER. On a pull request it runs the
+# already-test-verified `apex review --fix` — the SAME guarded pass as
+# `apex maintain`: risk-tiered, test-first-shielded, auto-rolled-back — so a fix
+# on an uncovered line is shielded or blocked, never gambled. If any verified
+# fixes land, it commits them back to the PR branch and posts a summary. Zero
+# tokens, fully offline, deterministic. Copy to .github/workflows/ to adopt it.
+#
+# Safety:
+#  * Only same-repo PRs run (a fork PR's GITHUB_TOKEN is read-only, so a push
+#    back would fail) — forks are skipped cleanly.
+#  * The autofix commit carries [skip ci], so the push it makes does NOT
+#    retrigger this workflow (no loop).
+#  * Nothing lands unverified: `apex review --fix` rolls back any change that
+#    breaks a previously-green test.
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+  workflow_dispatch:
+
+permissions:
+  contents: write         # commit + push verified fixes to the PR branch
+  pull-requests: write    # post the autofix summary as a sticky comment
+
+jobs:
+  apex-autofix:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # Check out the PR's HEAD branch (not the merge ref) with full history, so
+      # we can diff against the base AND push the fixes back to that branch.
+      - name: Check out the PR branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.head_ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Apex
+        run: pip install .
+
+      # Apply ONLY test-verified, auto-rolled-back fixes on the changed lines and
+      # capture the report (findings + "🔧 Applied N fix(es)") for the comment.
+      - name: Apex autofix (test-verified, guarded)
+        run: |
+          apex review --base "origin/${{ github.base_ref || 'main' }}" --fix > apex-autofix.md || true
+          cat apex-autofix.md >> "$GITHUB_STEP_SUMMARY"
+
+      # Commit + push ONLY if the verified fixes actually changed the tree. The
+      # [skip ci] tag stops the resulting push from retriggering this workflow.
+      - name: Commit and push verified fixes to the PR branch
+        run: |
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "_No verified fixes to apply — the diff is already clean._" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git config user.name "apex-autofix[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "style: apply Apex test-verified autofixes [skip ci]"
+          git push origin "HEAD:${{ github.head_ref }}"
+
+      # Sticky comment so the PR always shows Apex's current autofix status,
+      # updated in place on each push (never a thread of stale ones).
+      - name: Post autofix summary as a sticky PR comment
+        if: ${{ always() && github.event_name == 'pull_request' }}
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: apex-autofix
+          path: apex-autofix.md

@@ -699,19 +699,18 @@ results = store.search("eval usage", top_k=3)
 
 Pure stdlib — no ML dependencies. Uses bag-of-words + cosine similarity.
 
-## GitHub Actions Bot
+## GitHub Actions
 
-Automatically runs on every PR:
+Two deterministic, zero-token PR workflows (the fragile legacy `apex-bot.yml`,
+which posted a misleading top-level `risks` parse and a new non-sticky comment
+every push, was retired — `apex-ci.yml` supersedes its review role):
 
-```yaml
-# .github/workflows/apex-bot.yml
-- uses: actions/checkout@v4
-- run: python scripts/apex_github_bot.py --mode=report
-  env:
-    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-```
-
-Posts findings as PR comments. Fails CI on critical risks.
+- **`apex-ci.yml`** — reviews on every PR: `apex gate` (fails on a finding/
+  regression) + SARIF to the Security tab + a **sticky** verdict comment.
+- **`apex-autofix.yml`** — *fixes* on every same-repo PR: runs the test-verified,
+  auto-rolled-back `apex review --fix`, commits the verified fixes back to the PR
+  branch (`[skip ci]`, so no loop), and posts a sticky autofix summary. This is
+  the reviewer→fixer upgrade — nothing lands unverified.
 
 ---
 
