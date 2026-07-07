@@ -73,6 +73,16 @@ _PROTOCOL_DUNDERS = frozenset({
     "__setattr__",
 })
 
+# Module-level names that LOOK public (no leading underscore, a real assignment)
+# but are never a package's re-exportable API — well-known typing/runtime
+# sentinels. ``TYPE_CHECKING = False`` is the canonical idiom that lets a module
+# write ``if TYPE_CHECKING:`` without importing ``typing`` at runtime; folding it
+# into ``__all__`` would leak a bool sentinel as public API (seen wiring
+# ``humanize``). Excluded from collection so no package re-exports them.
+_NON_API_SENTINELS = frozenset({
+    "TYPE_CHECKING",
+})
+
 
 @dataclass
 class WirePlan:
@@ -134,7 +144,8 @@ def public_symbols_of_module(source: str) -> list[str]:
     seen: set[str] = set()
     for node in tree.body:
         for name in _node_export_names(node):
-            if name != "__all__" and _is_public(name) and name not in seen:
+            if (name != "__all__" and _is_public(name)
+                    and name not in _NON_API_SENTINELS and name not in seen):
                 seen.add(name)
                 out.append(name)
     return out
@@ -225,6 +236,15 @@ def collect_package_exports(package_dir: str | Path, init_source: str) -> WirePl
     pkg = Path(package_dir)
     plan = WirePlan(package_rel=pkg.name)
     already = _existing_init_bindings(init_source)
+    # An explicit, curated ``__all__`` is the maintainer's AUTHORITATIVE public
+    # surface. wire-exports will SATISFY it — wire imports for names it declares
+    # but that are not yet bound — but must NOT WIDEN it with sibling symbols the
+    # maintainer deliberately omitted (``humanize`` curates 22 names; the old
+    # behaviour added internals like ``Unit``/``powers`` on top). This honours
+    # human intent and under-claims, the same posture already taken for bare
+    # imports. With NO explicit ``__all__`` the package is unopinionated, so we
+    # still pin a COMPLETE one (``curated is None`` → collect every public symbol).
+    curated = _existing_all(init_source)
 
     for stem in _module_rels(pkg):
         try:
@@ -234,6 +254,8 @@ def collect_package_exports(package_dir: str | Path, init_source: str) -> WirePl
         for name in public_symbols_of_module(text):
             if name in already:
                 continue  # the human already wired it — leave it
+            if curated is not None and name not in curated:
+                continue  # deliberately omitted from a curated __all__ — respect it
             if name in plan.exports:
                 plan.skipped.append(name)  # a later module's collision — under-claim
                 continue
