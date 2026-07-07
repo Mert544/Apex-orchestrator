@@ -691,6 +691,35 @@ def render_mutation_markdown(result: MutationResult) -> str:
             "nothing to grade._\n"
         )
 
+    # Honesty guard (never fake a signal): when the baseline is red the
+    # kill/survive split is MEANINGLESS — every mutant trivially "survives" a
+    # suite that was already failing on the UNMUTATED module — so we must NOT
+    # render a grade letter or a "blind spots" list (both would libel the tests
+    # as weak when the measurement never actually ran). Report the void plainly
+    # and name the common cause so the developer can fix the sandbox-hostile
+    # covering test instead of chasing phantom survivors.
+    if not result.baseline_ok:
+        lines = [
+            f"# Test strength: ⚪ **not measured** — {result.module}",
+            "",
+            "_Baseline not green: the covering tests already FAIL on the "
+            "unmutated module inside the sandbox copy, so no mutation score can "
+            "be computed (a red baseline makes every mutant look \"killed\" — a "
+            "false 100% — so Apex refuses to score rather than fake one)._",
+            "",
+            "_Common cause: a covering test reconstructs source via "
+            "`git show HEAD:<path>` (or otherwise needs VCS/network state) and "
+            "errors in the `.git`-less sandbox. Fix or scope out that test, then "
+            "re-run._",
+            "",
+        ]
+        if result.scoped_tests:
+            files = ", ".join(f"`{f}`" for f in result.scoped_tests)
+            lines.append(f"_Covering scope ({len(result.scoped_tests)} file(s), "
+                         f"one of which is red in the sandbox): {files}._")
+            lines.append("")
+        return "\n".join(lines)
+
     letter = test_strength_grade(result.score)
     badge = _GRADE_BADGES.get(letter, "🔴")
     pct = round(result.score * 100, 1)
@@ -716,6 +745,16 @@ def render_mutation_markdown(result: MutationResult) -> str:
         lines.append("_No covering test imports this module — ran the full "
                      "suite._")
     lines.append("")
+
+    # Partial-scan honesty: a budget-truncated run examined only ``total``
+    # mutants, so "no survivors" means "none among those examined" — NOT "module
+    # clean". Say so, or the reader over-reads an incomplete scan as a pass.
+    if result.budget_exhausted:
+        lines.append("_⚠ Budget exhausted: only the "
+                     f"{result.total} examined mutant(s) were scored; the rest "
+                     "were left unvisited this run, so this is a partial reading, "
+                     "not a full one._")
+        lines.append("")
 
     # Where to look: the survivors are the blind spots. List them
     # ``file:line — operator`` in document order (survivors are already ordered).
