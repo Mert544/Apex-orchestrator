@@ -32,10 +32,20 @@ __all__ = [
 def _has_linked_test(root: Path, rel: str) -> bool:
     """True when a test file named for this module exists (``tests/test_<stem>.py``
     or a ``tests/test_<stem>_*.py`` variant) — a cheap, deterministic coverage
-    proxy: its absence is the single strongest signal the suite is blind here."""
-    stem = Path(rel).stem
-    return bool(list(root.glob(f"tests/test_{stem}.py"))
-                or list(root.glob(f"tests/test_{stem}_*.py")))
+    proxy: its absence is the single strongest signal the suite is blind here.
+
+    A PRIVATE module (``_apply_verify.py``) is conventionally tested under a name
+    WITHOUT the leading underscore (``test_apply_verify_shared.py``), so the raw
+    ``test__apply_verify*`` glob would miss it and falsely report the module blind
+    — an over-count that cries wolf on well-tested private helpers. So the
+    underscore-stripped stem is tried too; ``lstrip('_')`` handles a dunder or
+    multi-underscore prefix in one step."""
+    stems = {Path(rel).stem}
+    stems.add(next(iter(stems)).lstrip("_"))
+    return any(
+        s and (list(root.glob(f"tests/test_{s}.py"))
+               or list(root.glob(f"tests/test_{s}_*.py")))
+        for s in stems)
 
 
 def immune_posture(root: str | Path, top: int = 20) -> dict:

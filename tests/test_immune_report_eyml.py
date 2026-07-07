@@ -59,6 +59,16 @@ def test_has_linked_test_detects_named_and_suffixed(tmp_path):
     assert _has_linked_test(tmp_path, "app/baz.py") is False
 
 
+def test_has_linked_test_detects_private_module_tested_without_underscore(tmp_path):
+    # A private module `_apply_verify.py` is conventionally tested under a name
+    # WITHOUT the leading underscore (`test_apply_verify_shared.py`); the raw
+    # `test__apply_verify*` glob would miss it and cry wolf. The underscore-strip
+    # must find it, while a genuinely-untested private module stays blind.
+    _write(tmp_path, "tests/test_apply_verify_shared.py", "")
+    assert _has_linked_test(tmp_path, "app/execution/_apply_verify.py") is True
+    assert _has_linked_test(tmp_path, "app/execution/_never_tested.py") is False
+
+
 def test_is_deterministic(tmp_path):
     root = _project(tmp_path)
     assert immune_posture(root) == immune_posture(root)
