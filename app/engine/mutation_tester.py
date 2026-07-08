@@ -47,6 +47,7 @@ from app.engine.source_roots import source_roots as _source_roots
 # The canonical tree-walk exclusion (VCS, caches, venvs, build output, and
 # Apex's own metadata/`.claude` worktree copies) — shared so the walk below and
 # the mutant-sandbox copytree never drift from every other walker.
+from app.engine.import_reach import reaching_import_names
 from app.engine.skip_dirs import SKIPPED_DIRS as _SKIP_DIRS
 
 # Directories never worth copying into a mutant's throwaway sandbox.
@@ -555,16 +556,27 @@ def _imported_names(tree: ast.Module) -> set[str]:
 
 def covering_test_files(project_root, module_rel: str) -> list[str]:
     """Test files whose source imports the target module — a cheap, coverage-free
-    scope for mutation testing.
+    scope for mutation testing and per-move impact verification.
 
-    "Imports the module" is decided deterministically from each test file's AST:
-    a test covers ``module_rel`` if any of its ``import`` / ``from ... import``
-    statements references the module's dotted path (``app.engine.foo``) or a
-    parent package of it (so ``from app.engine import foo`` and
-    ``import app.engine`` both count). Files that fail to parse are skipped.
+    "Imports the module" is decided deterministically from each test file's AST,
+    and a test covers ``module_rel`` when any of its ``import`` /
+    ``from ... import`` statements would EXECUTE it:
 
-    Returns a sorted, de-duplicated list of test-file paths relative to
-    ``project_root`` (so the result is deterministic across runs).
+    * it names the module's dotted path (``app.engine.foo``) or a parent
+      package of it (``from app.engine import foo`` / ``import app.engine``);
+    * it names a project module that imports the target, directly or
+      transitively (a test importing ``pkg.api`` covers ``pkg/_impl.py`` when
+      ``api`` does ``from pkg._impl import f``) — resolved through the cached
+      project import graph (:mod:`app.engine.import_reach`);
+    * it names ANYTHING under a covered package's prefix — importing
+      ``pkg.sub._x`` executes ``pkg/sub/__init__.py`` on the way, so a change
+      to that ``__init__`` is covered even when ``_x`` is not a parseable
+      project module. (This exact shape produced a fake "verified" on the
+      external ``packaging`` run; the prefix rule is the belt to the graph's
+      suspenders.)
+
+    Files that fail to parse are skipped. Returns a sorted, de-duplicated list
+    of test-file paths relative to ``project_root`` (deterministic across runs).
     """
     root = Path(project_root)
     dotted = _module_dotted_path(module_rel)
@@ -577,6 +589,11 @@ def covering_test_files(project_root, module_rel: str) -> list[str]:
     # (``mylib``, ``mylib.calc`` for ``src/mylib/calc.py``) are ALSO targets, so
     # a test importing ``mylib.calc`` is no longer missed (impact-scoping blind).
     targets = _import_targets(root, module_rel)
+    # ... plus the import-reachability closure: the exact names of every project
+    # module whose import executes the target, and the descendant prefixes of
+    # every covered package __init__ (see the docstring's last two bullets).
+    reached, pkg_prefixes = reaching_import_names(root, module_rel)
+    targets |= reached
 
     matches: set[str] = set()
     for path in root.rglob("*.py"):
@@ -590,9 +607,16 @@ def covering_test_files(project_root, module_rel: str) -> list[str]:
         except (OSError, SyntaxError, ValueError, RecursionError, MemoryError):
             continue
         imported = _imported_names(tree)
-        if imported & targets:
+        if imported & targets or _under_any(imported, pkg_prefixes):
             matches.add(rel)
     return sorted(matches)
+
+
+def _under_any(names: set[str], prefixes: tuple[str, ...]) -> bool:
+    """True when any imported name sits strictly under one of the covered
+    package prefixes (each ends with ``.``) — importing a descendant executes
+    the package ``__init__`` on the way."""
+    return any(name.startswith(prefix) for prefix in prefixes for name in names)
 
 
 def _verify_killed(project_root: Path, module_rel: str,

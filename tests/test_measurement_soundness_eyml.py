@@ -298,13 +298,14 @@ def test_equivalent_no_op_mutation_is_not_counted_as_killed(tmp_path):
 # 3. Covering-test selection blind spots: re-export and exec'd import.
 # ===========================================================================
 
-def test_covering_selection_misses_reexport_indirection(tmp_path):
-    """BLIND SPOT (pinned): a test that reaches the target only through a
-    re-export shim (``from app.shim import classify`` where ``app/shim.py``
-    does ``from app.foo import classify``) is NOT selected — the AST scan sees
-    only the test's literal imports (``app.shim``), never the transitive
-    ``app.foo`` the shim pulls in. Such a test, even if strong, is excluded
-    from the scope.
+def test_covering_selection_resolves_reexport_indirection(tmp_path):
+    """BLIND SPOT CLOSED (was pinned as a miss): a test that reaches the target
+    only through a re-export shim (``from app.shim import classify`` where
+    ``app/shim.py`` does ``from app.foo import classify``) IS selected now —
+    the project import graph (:mod:`app.engine.import_reach`) resolves the
+    transitive hop the test's literal imports never name. This exact shape let
+    a broken change be stamped "verified" on the external ``packaging`` run,
+    so the strong shim-routed test must be in scope.
     """
     rel = _write_pkg_project(
         tmp_path, _BRANCHY_MODULE,
@@ -319,8 +320,8 @@ def test_covering_selection_misses_reexport_indirection(tmp_path):
         "from app.foo import classify\n", encoding="utf-8",
     )
 
-    # app.foo is reached only transitively, so the test is NOT in the scope.
-    assert covering_test_files(str(tmp_path), rel) == []
+    # app.foo is reached through the shim, so the test IS in the scope.
+    assert covering_test_files(str(tmp_path), rel) == ["tests/test_foo.py"]
 
 
 def test_covering_selection_misses_exec_string_import(tmp_path):
