@@ -51,15 +51,25 @@ jobs:
 
       # Apply ONLY test-verified, auto-rolled-back fixes on the changed lines and
       # capture the report (findings + "🔧 Applied N fix(es)") for the comment.
+      # The report is written OUTSIDE the working tree ($RUNNER_TEMP): on the
+      # first live run (PR #4) it was written into the tree and the commit step
+      # below swept it up as a phantom "autofix" — a report file at the repo
+      # root, committed with a message claiming verified fixes. Never again.
       - name: Apex autofix (test-verified, guarded)
         run: |
-          apex review --base "origin/${{ github.base_ref || 'main' }}" --fix > apex-autofix.md || true
-          cat apex-autofix.md >> "$GITHUB_STEP_SUMMARY"
+          apex review --base "origin/${{ github.base_ref || 'main' }}" --fix > "$RUNNER_TEMP/apex-autofix.md" || true
+          cat "$RUNNER_TEMP/apex-autofix.md" >> "$GITHUB_STEP_SUMMARY"
 
-      # Commit + push ONLY if the verified fixes actually changed the tree. The
+      # Commit + push ONLY when the report EXPLICITLY says verified fixes were
+      # applied AND the tree actually changed — tree dirtiness alone is not
+      # evidence of a fix (any stray artifact would masquerade as one). The
       # [skip ci] tag stops the resulting push from retriggering this workflow.
       - name: Commit and push verified fixes to the PR branch
         run: |
+          if ! grep -q "🔧 Applied" "$RUNNER_TEMP/apex-autofix.md"; then
+            echo "_No verified fixes to apply — the diff is already clean._" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           if [ -z "$(git status --porcelain)" ]; then
             echo "_No verified fixes to apply — the diff is already clean._" >> "$GITHUB_STEP_SUMMARY"
             exit 0
