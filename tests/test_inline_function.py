@@ -98,7 +98,11 @@ def test_inline_same_file_def_above_call(tmp_path):
     assert ns["use"](5) == 10
 
 
-def test_inline_across_two_files(tmp_path):
+def test_inline_across_two_files_is_refused(tmp_path):
+    # Cross-file inlining is now a REFUSAL: main.py's ``from helpers import
+    # fee`` would dangle once the def is deleted (ImportError at the next
+    # collection — the exact break the external ``packaging`` run demonstrated
+    # live). The old pin deleted the def while KEEPING the import.
     _write(tmp_path, "helpers.py",
            "def fee(x):\n"
            "    return x * 2\n")
@@ -109,10 +113,9 @@ def test_inline_across_two_files(tmp_path):
            "def use(n):\n"
            "    return fee(n)\n")
     plan = plan_inline(str(tmp_path), "fee")
-    assert not plan.blockers, plan.blockers
-    # Definition removed from helpers.py, call replaced in main.py.
-    assert "def fee" not in plan.new_contents["helpers.py"]
-    assert "((n) * 2)" in plan.new_contents["main.py"]
+    assert plan.blockers, "an import-referenced helper must be refused"
+    assert any("import" in b for b in plan.blockers)
+    assert not plan.new_contents
 
 
 # ── Multiple call sites ──
@@ -173,7 +176,10 @@ def test_inline_two_sites_same_file_def_between(tmp_path):
     assert ns["below"]() == 8
 
 
-def test_inline_two_sites_across_files(tmp_path):
+def test_inline_two_sites_across_files_is_refused(tmp_path):
+    # Same refusal with TWO importing files: every ``from helpers import fee``
+    # would dangle. The rewriter does no import cleanup, so a sound cross-file
+    # inline is not currently plannable — refusing is the honest verdict.
     _write(tmp_path, "helpers.py",
            "def fee(x):\n"
            "    return x * 2\n")
@@ -190,13 +196,9 @@ def test_inline_two_sites_across_files(tmp_path):
            "def other(m):\n"
            "    return fee(m) + 1\n")
     plan = plan_inline(str(tmp_path), "fee")
-    assert not plan.blockers, plan.blockers
-    assert "def fee" not in plan.new_contents["helpers.py"]
-    assert "((n) * 2)" in plan.new_contents["one.py"]
-    assert "((m) * 2)" in plan.new_contents["two.py"]
-    assert plan.edits_by_file["helpers.py"] == 1
-    assert plan.edits_by_file["one.py"] == 1
-    assert plan.edits_by_file["two.py"] == 1
+    assert plan.blockers, "an import-referenced helper must be refused"
+    assert not plan.new_contents
+    assert plan.edits_by_file == {}
 
 
 def test_inline_sites_pass_different_arguments(tmp_path):

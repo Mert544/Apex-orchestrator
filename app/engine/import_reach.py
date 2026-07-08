@@ -178,7 +178,12 @@ def _add_edges(root: Path, rel: str, own_names: list[str],
     """Record every module whose execution ``rel``'s import triggers: each
     ancestor package ``__init__`` (importing ``pkg.mod`` runs
     ``pkg/__init__.py``) and each project module its own import statements
-    resolve to. A parse failure contributes the ancestor edges only."""
+    resolve to. A parse failure contributes the ancestor edges only. A file
+    with NO import name at all (a repo-root ``__init__.py`` — its dotted path
+    collapses to empty) is skipped: it is not addressable by any import
+    statement, so it can contribute no edges (honest degrade, no crash)."""
+    if not own_names:
+        return
     for name in own_names:
         parts = name.split(".")
         for i in range(1, len(parts)):

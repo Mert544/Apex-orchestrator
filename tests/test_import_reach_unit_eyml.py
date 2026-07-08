@@ -52,6 +52,19 @@ def test_star_import_resolves_to_the_package(tmp_path):
     assert "pkg.consumer" in exact
 
 
+def test_repo_root_init_never_crashes_the_graph(tmp_path):
+    # A repo-root ``__init__.py`` has an EMPTY dotted path (no import name at
+    # all). The graph build walks every project file, so it must skip such a
+    # file instead of crashing on its empty name list — found live: the
+    # verify-budget fixtures carry exactly this shape and the first graph
+    # build raised IndexError on them.
+    _write(tmp_path, "__init__.py", "")
+    _write(tmp_path, "alpha.py", "A = 1\n")
+    _write(tmp_path, "bravo.py", "import alpha\n")
+    exact, prefixes = reaching_import_names(tmp_path, "alpha.py")
+    assert "bravo" in exact  # the real edges still resolve
+
+
 def test_unparseable_importer_degrades_to_ancestor_edges_only(tmp_path):
     # A module that fails to parse contributes no import edges (its imports are
     # invisible), but its POSITION still counts: importing it executes its
