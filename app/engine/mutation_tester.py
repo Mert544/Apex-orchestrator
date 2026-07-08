@@ -609,7 +609,36 @@ def covering_test_files(project_root, module_rel: str) -> list[str]:
         imported = _imported_names(tree)
         if imported & targets or _under_any(imported, pkg_prefixes):
             matches.add(rel)
-    return sorted(matches)
+    return sorted(_expand_conftest_matches(root, matches))
+
+
+def _expand_conftest_matches(root: Path, matches: set[str]) -> set[str]:
+    """Replace a matched ``conftest.py`` with the test files its fixtures serve.
+
+    A ``conftest.py`` that imports the target is a REAL linkage — its fixtures
+    hand the target's objects to every test at or below its directory — but it
+    cannot be RUN: passing it to pytest collects nothing (exit 5), so a scope
+    of ``['tests/conftest.py']`` verifies nothing (audit 2026-07-08, trust-chain
+    finding 2: a false red in absolute mode, a fail-closed rollback in delta).
+    The honest runnable scope is the tests under the conftest's directory
+    (``test_*.py`` / ``*_test.py``, pytest's own conventions) — an over-
+    approximation in the safe direction (fixture-using tests run; unrelated
+    siblings just cost time). A conftest with no tests below it expands to
+    NOTHING, so the caller falls back to the full suite. (A repo-ROOT
+    ``conftest.py`` outside ``tests/`` was never matched as a test file at
+    all — that linkage stays a known, disclosed blind spot.)"""
+    out: set[str] = set()
+    for rel in matches:
+        p = Path(rel)
+        if p.name != "conftest.py":
+            out.add(rel)
+            continue
+        for pattern in ("test_*.py", "*_test.py"):
+            for path in sorted((root / p.parent).rglob(pattern)):
+                if any(part in _SKIP_DIRS for part in path.parts):
+                    continue
+                out.add(path.relative_to(root).as_posix())
+    return out
 
 
 def _under_any(names: set[str], prefixes: tuple[str, ...]) -> bool:
