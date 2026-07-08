@@ -16,7 +16,13 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
+      # Byte-identical characterization tests recover their pre-refactor
+      # baseline via `git show <sha>:path`; a shallow clone lacks those
+      # commits, so collection ERRORs and the whole job dies before a single
+      # test runs (observed live on PR #4). Same fix ci.yml already carries.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -28,8 +34,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e .[dev]
 
-      - name: Run test suite
-        run: pytest --tb=short
+      # The chunked gate, not a single pytest process: one process holding the
+      # whole ~20k-test suite accumulates every module's state and gets OOM-
+      # killed on a memory-constrained runner — the exact failure mode
+      # scripts/verify.py exists to prevent (each chunk runs in its own
+      # process; --no-lint because the CI workflow lints separately).
+      - name: Run test suite (chunked gate)
+        run: python scripts/verify.py --chunks 16 --no-lint
 
   security-audit:
     runs-on: ubuntu-latest
