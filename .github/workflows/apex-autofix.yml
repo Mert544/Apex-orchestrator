@@ -87,4 +87,6 @@ jobs:
         uses: marocchino/sticky-pull-request-comment@v2
         with:
           header: apex-autofix
-          path: apex-autofix.md
+          # The report lives OUTSIDE the working tree (see the autofix step) so
+          # the commit step can never sweep it up as a phantom fix.
+          path: ${{ runner.temp }}/apex-autofix.md
