@@ -139,6 +139,21 @@ def test_dunder_import_string_counts_as_coverage(tmp_path):
     assert covering_test_files(tmp_path, "pkg/calc.py") == ["tests/test_dunder.py"]
 
 
+def test_colocated_suffix_test_is_a_covering_linkage(tmp_path):
+    # The COLOCATED pytest layout (``pkg/calc_test.py`` beside ``pkg/calc.py``,
+    # pytest's default ``*_test.py`` python_files shape) was invisible to the
+    # scope predicates: such a test never entered any scoped gate (finding 11).
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/calc.py", "def add(a, b):\n    return a + b\n")
+    _write(tmp_path, "pkg/calc_test.py",
+           "from pkg.calc import add\n\n\ndef test_add():\n"
+           "    assert add(1, 2) == 3\n")
+    _write(tmp_path, "pyproject.toml", "[project]\nname='demo'\nversion='0'\n")
+    assert covering_test_files(tmp_path, "pkg/calc.py") == ["pkg/calc_test.py"]
+    # And a CHANGED colocated test runs itself through the impact seam.
+    assert impacted_test_files(tmp_path, ["pkg/calc_test.py"]) == ["pkg/calc_test.py"]
+
+
 def test_computed_dynamic_name_stays_honestly_invisible(tmp_path):
     # A COMPUTED module name cannot be read by any deterministic AST scan —
     # it must NOT match (no guessing), mirroring the pinned exec-string miss.

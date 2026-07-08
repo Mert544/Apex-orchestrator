@@ -526,13 +526,16 @@ def _import_targets(project_root: Path, module_rel: str) -> set[str]:
 
 def _is_test_file(rel: str) -> bool:
     """A path is a test file if it lives under ``tests/`` or its filename
-    matches ``test_*.py`` — the same convention pytest discovers by default."""
+    matches ``test_*.py`` / ``*_test.py`` — the same conventions pytest's
+    default ``python_files`` discovers. The suffix form is the COLOCATED
+    layout (``pkg/calc_test.py`` beside ``pkg/calc.py``); missing it dropped
+    every such test from the scoped gate (audit 2026-07-08, finding 11)."""
     p = Path(rel)
     if p.suffix != ".py":
         return False
     if "tests" in p.parts:
         return True
-    return p.name.startswith("test_")
+    return p.name.startswith("test_") or p.name.endswith("_test.py")
 
 
 def _imported_names(tree: ast.Module) -> set[str]:

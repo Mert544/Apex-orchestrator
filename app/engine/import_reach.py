@@ -118,10 +118,11 @@ def _project_files(root: Path) -> list[tuple[str, int, int]]:
 
 
 def _is_test_path(rel: str) -> bool:
-    """Same convention as covering-scope's test discovery: under ``tests/`` or
-    named ``test_*.py``."""
+    """Same conventions as covering-scope's test discovery: under ``tests/``,
+    named ``test_*.py``, or the colocated ``*_test.py``."""
     p = Path(rel)
-    return "tests" in p.parts or p.name.startswith("test_")
+    return ("tests" in p.parts or p.name.startswith("test_")
+            or p.name.endswith("_test.py"))
 
 
 def _build_graph(root: Path,
