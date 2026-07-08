@@ -101,3 +101,52 @@ def test_widening_is_deterministic(tmp_path):
     first = covering_test_files(tmp_path, "pkg/calc.py")
     second = covering_test_files(tmp_path, "pkg/calc.py")
     assert first == second == sorted(first)
+
+
+# --- literal dynamic imports are covering linkages too (finding 5) --------------
+
+def test_import_module_string_counts_as_coverage(tmp_path):
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/calc.py", "def add(a, b):\n    return a + b\n")
+    _write(tmp_path, "tests/test_dynamic.py",
+           "import importlib\n\n\ndef test_add():\n"
+           "    mod = importlib.import_module('pkg.calc')\n"
+           "    assert mod.add(1, 2) == 3\n")
+    _write(tmp_path, "pyproject.toml", "[project]\nname='demo'\nversion='0'\n")
+    assert covering_test_files(tmp_path, "pkg/calc.py") == ["tests/test_dynamic.py"]
+
+
+def test_importorskip_string_counts_as_coverage(tmp_path):
+    # The standard optional-dependency pattern: the WHOLE file exercises the
+    # module but no static import names it.
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/calc.py", "def add(a, b):\n    return a + b\n")
+    _write(tmp_path, "tests/test_optional.py",
+           "import pytest\n\ncalc = pytest.importorskip('pkg.calc')\n\n\n"
+           "def test_add():\n    assert calc.add(1, 2) == 3\n")
+    _write(tmp_path, "pyproject.toml", "[project]\nname='demo'\nversion='0'\n")
+    assert covering_test_files(tmp_path, "pkg/calc.py") == ["tests/test_optional.py"]
+
+
+def test_dunder_import_string_counts_as_coverage(tmp_path):
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/calc.py", "def add(a, b):\n    return a + b\n")
+    _write(tmp_path, "tests/test_dunder.py",
+           "def test_add():\n"
+           "    pkg = __import__('pkg.calc')\n"
+           "    assert pkg.calc.add(1, 2) == 3\n")
+    _write(tmp_path, "pyproject.toml", "[project]\nname='demo'\nversion='0'\n")
+    assert covering_test_files(tmp_path, "pkg/calc.py") == ["tests/test_dunder.py"]
+
+
+def test_computed_dynamic_name_stays_honestly_invisible(tmp_path):
+    # A COMPUTED module name cannot be read by any deterministic AST scan —
+    # it must NOT match (no guessing), mirroring the pinned exec-string miss.
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/calc.py", "def add(a, b):\n    return a + b\n")
+    _write(tmp_path, "tests/test_computed.py",
+           "import importlib\n\nNAME = 'pkg' + '.calc'\n\n\n"
+           "def test_add():\n"
+           "    assert importlib.import_module(NAME).add(1, 2) == 3\n")
+    _write(tmp_path, "pyproject.toml", "[project]\nname='demo'\nversion='0'\n")
+    assert covering_test_files(tmp_path, "pkg/calc.py") == []

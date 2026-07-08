@@ -539,7 +539,16 @@ def _imported_names(tree: ast.Module) -> set[str]:
     """All dotted names referenced by ``import`` / ``from ... import`` in a
     parsed module. For ``from a.b import c`` we record both ``a.b`` (the source
     package) and ``a.b.c`` (the imported member) so either can match a module's
-    dotted path. Relative imports are ignored (no absolute path to match)."""
+    dotted path. Relative imports are ignored (no absolute path to match).
+
+    LITERAL dynamic imports count too (audit 2026-07-08, trust-chain finding
+    5): ``importlib.import_module("pkg.mod")``, ``pytest.importorskip("pkg.mod")``
+    (the standard optional-dependency pattern in real test suites) and
+    ``__import__("pkg.mod")`` name their module in a string constant a static
+    scan can read — missing them dropped genuinely-covering tests from the
+    scope. Only a literal first argument counts; a COMPUTED name is honestly
+    invisible to any deterministic AST scan (the pinned ``exec``-string blind
+    spot stays a disclosed miss)."""
     names: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -551,7 +560,36 @@ def _imported_names(tree: ast.Module) -> set[str]:
             names.add(node.module)
             for alias in node.names:
                 names.add(f"{node.module}.{alias.name}")
+        elif isinstance(node, ast.Call):
+            dynamic = _dynamic_import_arg(node)
+            if dynamic:
+                names.add(dynamic)
     return names
+
+
+# The callable names whose LITERAL first argument is a module path. Both the
+# attribute form (``importlib.import_module`` / ``pytest.importorskip``) and
+# the bare imported form (``from importlib import import_module``) are common.
+_DYNAMIC_IMPORTERS = frozenset({"import_module", "importorskip", "__import__"})
+
+
+def _dynamic_import_arg(node: ast.Call) -> str | None:
+    """The literal dotted module a dynamic-import call pulls in, or ``None``.
+
+    Matches ``__import__(...)`` / ``import_module(...)`` / ``importorskip(...)``
+    by callee name (bare or attribute form) with a string-constant first
+    argument. A relative name (``import_module(".mod", package=...)``) is
+    skipped — it has no absolute path to match."""
+    func = node.func
+    callee = func.id if isinstance(func, ast.Name) else (
+        func.attr if isinstance(func, ast.Attribute) else None)
+    if callee not in _DYNAMIC_IMPORTERS or not node.args:
+        return None
+    first = node.args[0]
+    if (isinstance(first, ast.Constant) and isinstance(first.value, str)
+            and first.value and not first.value.startswith(".")):
+        return first.value
+    return None
 
 
 def covering_test_files(project_root, module_rel: str) -> list[str]:
