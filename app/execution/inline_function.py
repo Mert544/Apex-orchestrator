@@ -125,6 +125,52 @@ def _has_object_ref(trees: dict[str, ast.Module], func_name: str) -> bool:
     return False
 
 
+def _extern_referenced_names(trees: dict[str, ast.Module]) -> set[str]:
+    """Names referenced in ways the inline rewrite CANNOT satisfy — deleting the
+    def breaks them even though no bare-object use exists:
+
+    * a ``from ... import NAME`` alias anywhere in the project (tests included)
+      — the import dangles once the def is gone (ImportError at collection; the
+      exact break the external ``packaging`` run demonstrated live);
+    * a string entry of a top-level ``__all__`` — the public re-export contract
+      ``from mod import *`` consumers and the wire-exports oracle rely on;
+    * an attribute-form CALLEE (``m.NAME(...)``) — invisible to the bare-Name
+      call rewriter, so the site would survive un-rewritten and break at
+      runtime.
+
+    One walk over the whole project (the same O(nodes) discipline as
+    :func:`_bare_object_names`); ``name in`` this set is a hard inline blocker."""
+    names: set[str] = set()
+    for tree in trees.values():
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                names.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                names.add(node.func.attr)
+            elif _is_all_assign(node):
+                names.update(_str_literals(node.value))
+    return names
+
+
+def _is_all_assign(node: ast.AST) -> bool:
+    """Is this statement a top-level-style ``__all__`` (re)assignment —
+    ``__all__ = [...]``, ``__all__ += [...]`` or ``__all__: list = [...]``?"""
+    if isinstance(node, ast.Assign):
+        return any(isinstance(t, ast.Name) and t.id == "__all__"
+                   for t in node.targets)
+    if isinstance(node, (ast.AugAssign, ast.AnnAssign)):
+        return isinstance(node.target, ast.Name) and node.target.id == "__all__"
+    return False
+
+
+def _str_literals(expr: ast.expr | None) -> set[str]:
+    """Every string constant anywhere inside ``expr`` (an ``__all__`` value)."""
+    if expr is None:
+        return set()
+    return {n.value for n in ast.walk(expr)
+            if isinstance(n, ast.Constant) and isinstance(n.value, str)}
+
+
 def _bare_object_names(trees: dict[str, ast.Module]) -> set[str]:
     """Every name used as a bare object (Name/Attribute outside a Call's callee
     position) ANYWHERE in ``trees`` — the whole-project complement of
@@ -535,6 +581,16 @@ def plan_inline(project_root: str | Path, function_name: str) -> RenamePlan:
     expr = _qualify_definition(plan, trees, fn, function_name)
     if expr is None:
         return plan
+    if function_name in _extern_referenced_names(trees):
+        # Deleting the def would break references the rewrite cannot satisfy: a
+        # `from ... import NAME` alias (dangling import -> ImportError — the
+        # live packaging break), an __all__ entry (public re-export contract),
+        # or an attribute-form call the bare-Name rewriter never sees.
+        plan.blockers.append(
+            f"'{function_name}' is referenced beyond bare calls (an import "
+            "statement, an __all__ entry, or an attribute-form call) — "
+            "deleting its definition would break those references; not inlining")
+        return plan
 
     sites = _call_sites(trees, function_name)
     if not sites:
@@ -590,11 +646,14 @@ def _defs_by_name(
 
 
 def _suggest_qualifies(
-        name: str, fn: ast.FunctionDef, bare: set[str], n_sites: int) -> bool:
+        name: str, fn: ast.FunctionDef, bare: set[str], extern: set[str],
+        n_sites: int) -> bool:
     """The lightweight structural mirror of ``plan_inline``'s qualification rules
     for ONE single-definition helper: no decorators, simple params, a single
-    ``return EXPR`` body, non-recursive, never a bare object, and a SMALL call
-    count (1..``_SUGGEST_MAX_CALL_SITES``). True only when every rule passes."""
+    ``return EXPR`` body, non-recursive, never a bare object, never referenced
+    by an import / ``__all__`` / attribute-form call (``extern`` — the guard the
+    external ``packaging`` break added), and a SMALL call count
+    (1..``_SUGGEST_MAX_CALL_SITES``). True only when every rule passes."""
     if fn.decorator_list or not _simple_params(fn):
         return False
     expr = _return_expr(fn)
@@ -605,6 +664,9 @@ def _suggest_qualifies(
         return False
     # Never travels as a bare object — only ever called.
     if name in bare:
+        return False
+    # Never referenced where the rewrite can't follow (import/__all__/attr call).
+    if name in extern:
         return False
     return 1 <= n_sites <= _SUGGEST_MAX_CALL_SITES
 
@@ -644,6 +706,7 @@ def suggest_inlines(project_root: str | Path,
     # tree instead of the three the two standalone helpers would do), so the
     # result is identical while the hottest part of the scan runs once less.
     bare, call_counts = _bare_and_call_index(trees)
+    extern = _extern_referenced_names(trees)
 
     found: list[dict] = []
     for name in sorted(defs_by_name):
@@ -652,7 +715,7 @@ def suggest_inlines(project_root: str | Path,
             continue
         rel, fn = defs[0]
         n_sites = call_counts.get(name, 0)
-        if not _suggest_qualifies(name, fn, bare, n_sites):
+        if not _suggest_qualifies(name, fn, bare, extern, n_sites):
             continue
         found.append({"module": rel, "function": name,
                       "line": fn.lineno, "call_sites": n_sites})

@@ -256,8 +256,11 @@ def _inline_project(tmp_path: Path) -> Path:
 def test_inline_fitness_counts_single_use_helpers(tmp_path):
     from app.engine.objective_compiler import inlinable_helper_fitness
     _inline_project(tmp_path)
-    # double, triple, use are all single-use → 3.
-    assert inlinable_helper_fitness(str(tmp_path)) == 3.0
+    # double and triple are single-use and module-private → 2. ``use`` is
+    # imported BY NAME from the test, so the extern-reference guard (the live
+    # packaging dangling-import break) honestly excludes it — inlining it was
+    # never landable, so it must not inflate the fitness signal either.
+    assert inlinable_helper_fitness(str(tmp_path)) == 2.0
 
 
 def test_inline_objective_folds_internal_helpers(tmp_path):
@@ -276,8 +279,16 @@ def test_inline_objective_will_not_dissolve_a_public_function_into_a_test(tmp_pa
     # would empty its module and move real code into a test assertion.
     _inline_project(tmp_path)
     r = compile_objective(str(tmp_path), objective="inline-helpers", apply=True, verify=False)
-    assert any("test/fixture" in b for b in r.blocked)
-    assert r.fitness_end >= 1.0  # use() remains, honestly counted
+    # ``use`` is never even PROPOSED now: the test imports it by name, so the
+    # extern-reference guard refuses it at the suggestion stage (deleting it
+    # would leave the test's import dangling — the live packaging break), one
+    # gate earlier than the "test/fixture" apply-time blocker this used to pin.
+    src = (tmp_path / "app" / "m.py").read_text()
+    assert "def use" in src  # the public surface survives
+    assert all("use" not in s.target for s in r.steps)
+    # No landable helper remains: ``use`` is extern-guarded and honestly not
+    # counted, so the end fitness is a true zero, not a phantom candidate.
+    assert r.fitness_end == 0.0
 
 
 def test_inline_objective_dry_run_lists_only_safe_moves(tmp_path):
