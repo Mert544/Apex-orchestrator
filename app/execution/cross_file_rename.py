@@ -575,7 +575,15 @@ def _scoped_delta_verdict(proc: object, impacted: list[str], plan: RenamePlan,
     ``regressed_functions``. ``ok`` is True iff that diff is empty (never-fake-green:
     a baseline-green test now red — including a NEW collection error — still blocks).
     The evidence discloses, honestly, how many pre-existing failures it tolerated
-    and what (if anything) the change introduced."""
+    and what (if anything) the change introduced.
+
+    VALIDITY guard first: the diff is only sound when pytest genuinely reached
+    its per-test summary — exit 0, or exit 1 WITH at least one parsed node line.
+    A collapsed run (usage error 4, nothing collected 5, interrupted 2, internal
+    error 3, or an interpreter whose ``-m pytest`` never launched: exit 1 with
+    zero node lines) yields an empty after-set for the WRONG reason, and diffing
+    it would read as "no regressions" — fake green. Such a run FAILS the move
+    (fail closed, honest ``delta_run_invalid`` evidence), never verifies it."""
     from app.execution._apply_verify import (
         _NODE_LINE,
         delta_green_disclosure,
@@ -584,6 +592,13 @@ def _scoped_delta_verdict(proc: object, impacted: list[str], plan: RenamePlan,
 
     text = (getattr(proc, "stdout", "") or "") + (getattr(proc, "stderr", "") or "")
     after = frozenset(_NODE_LINE.findall(text))
+    rc = getattr(proc, "returncode", None)
+    if rc not in (0, 1) or (rc == 1 and not after):
+        return False, {
+            "scoped": True, "tests": impacted,
+            "deselected": sorted(plan.scoped_excluded_nodes), "passed": False,
+            "delta_run_invalid": True, "returncode": rc,
+        }
     scoped_baseline = _baseline_for_files(baseline_failing, impacted)
     introduced = regressed_functions(scoped_baseline, after)
     ok = not introduced

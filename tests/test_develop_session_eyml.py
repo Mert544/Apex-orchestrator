@@ -707,18 +707,30 @@ def _transitive_regression_project(root: Path) -> Path:
         BEFORE and AFTER the rewrite (``None``/``7`` cases are identical for ``==``
         and ``is``), so the impact-scoped gate LETS THE MOVE LAND.
       * ``pkg/wrapper.py`` — calls ``is_blank`` indirectly; ``test_wrapper.py``
-        imports the WRAPPER (not ``check``), so it is OUTSIDE the move's impacted
-        scope. It feeds ``MISSING`` and is GREEN at baseline (``MISSING == None``)
-        but RED after the rewrite (``MISSING is None`` is False) — the transitive
-        regression the scoped gate misses.
+        reaches the wrapper ONLY through an exec-string DYNAMIC import — the one
+        linkage shape the AST scope scan legitimately cannot see (pinned in
+        ``test_covering_selection_misses_exec_string_import``), so it stays
+        OUTSIDE the move's impacted scope even with import-graph reachability
+        (``app.engine.import_reach``) in place. (A plain static import no longer
+        works here: the reachability closure would pull the wrapper's test INTO
+        scope and the per-move gate would catch the break itself.) It feeds
+        ``MISSING`` and is GREEN at baseline (``MISSING == None``) but RED after
+        the rewrite (``MISSING is None`` is False) — the transitive regression
+        the scoped gate misses.
       * ``tests/test_unrelated_red.py`` — a pre-existing FAILING test (unrelated),
         which FORCES the session onto the impact-scoped path (the violation's
-        precondition)."""
+        precondition).
+      * ``pkg/__init__.py`` carries a CURATED empty ``__all__`` so the session's
+        wire-exports objective (curated ``__all__`` is authoritative — satisfy,
+        never widen) leaves it alone: were it wired to re-export ``check``, any
+        test importing the package would execute ``check.py`` via ``__init__``
+        and the reachability closure would — correctly — pull ``test_wrapper``
+        into the per-move scope, catching the break before it ever lands."""
     (root / "pkg").mkdir(parents=True)
     (root / "tests").mkdir()
     (root / "pyproject.toml").write_text(
         "[project]\nname='pkg'\nversion='0'\n", encoding="utf-8")
-    (root / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "pkg" / "__init__.py").write_text("__all__ = []\n", encoding="utf-8")
     (root / "pkg" / "sentinel.py").write_text(
         "class Missing:\n"
         "    def __eq__(self, other):\n"
@@ -737,10 +749,13 @@ def _transitive_regression_project(root: Path) -> Path:
         "def test_blank_value():\n    assert is_blank(7) is False\n",
         encoding="utf-8")
     (root / "tests" / "test_wrapper.py").write_text(
-        "from pkg.wrapper import blank_via_wrapper\n"
         "from pkg.sentinel import MISSING\n"
+        "def _wrapper():\n"
+        "    ns = {}\n"
+        "    exec('from pkg.wrapper import blank_via_wrapper', ns)\n"
+        "    return ns['blank_via_wrapper']\n"
         "def test_missing_is_blank():\n"
-        "    assert blank_via_wrapper(MISSING) is True\n", encoding="utf-8")
+        "    assert _wrapper()(MISSING) is True\n", encoding="utf-8")
     (root / "tests" / "test_unrelated_red.py").write_text(
         "def test_preexisting_failure():\n    assert 1 == 2\n", encoding="utf-8")
     return root

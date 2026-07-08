@@ -25,6 +25,7 @@ __all__ = [
     "NO_SUITE",
     "VERIFICATION_UNAVAILABLE",
     "delta_green_disclosure",
+    "delta_run_valid",
     "function_of",
     "mark_no_suite",
     "mark_verification_unavailable",
@@ -35,6 +36,7 @@ __all__ = [
     "suite_baseline_green",
     "suite_baseline_state",
     "suite_failing_nodes",
+    "suite_failing_nodes_checked",
     "verification_unavailable_interpreter",
 ]
 
@@ -125,6 +127,49 @@ def _failing_nodes_of(summary: object) -> frozenset[str]:
     return frozenset(nodes)
 
 
+def _is_pytest_command(command: object) -> bool:
+    """Whether a recorded run command invokes pytest (``python -m pytest ...`` /
+    a bare ``pytest`` entry point). Non-pytest commands (a mixed repo's
+    ``npm test``) contribute no node lines, so validity judges them only for
+    timeouts, never for the pytest exit-code contract."""
+    return any("pytest" in str(part) for part in (command or []))
+
+
+def delta_run_valid(summary: object, after_failing: frozenset[str]) -> bool:
+    """Is a suite run's failing-node set actually COMPARABLE for a delta verdict?
+
+    The delta-green gate diffs ``FAILED``/``ERROR`` short-summary node lines.
+    Those lines exist only when pytest genuinely REACHED its per-test summary:
+    exit 0 (all green) or exit 1 (tests ran, some failed — and then at least one
+    node line is printed). A run that COLLAPSED — usage error (4), nothing
+    collected (5), interrupted (2), internal error (3), a timeout, or an
+    interpreter whose ``python -m pytest`` never launched (exit 1 with ZERO node
+    lines, e.g. ``No module named pytest``) — produces an empty/truncated node
+    set for the WRONG reason. A nodes-only diff reads that collapse as "no
+    regressions": the exact fake green this gate exists to prevent. Every delta
+    verdict must pass this guard before comparing sets; on ``False`` the caller
+    fails CLOSED (rolls back / refuses) — it never stamps verified.
+
+    Judged per recorded command: any timed-out command invalidates the run;
+    pytest commands must exit 0 or 1; an exit-1 pytest run must have yielded at
+    least one parsed node. A summary with no recorded results never validates
+    (nothing ran — nothing is comparable)."""
+    results = getattr(summary, "results", None) or []
+    if not results:
+        return False
+    saw_failure_rc = False
+    for res in results:
+        if res.get("timed_out"):
+            return False
+        if not _is_pytest_command(res.get("command")):
+            continue
+        rc = res.get("returncode")
+        if rc not in (0, 1):
+            return False
+        saw_failure_rc = saw_failure_rc or rc == 1
+    return not (saw_failure_rc and not after_failing)
+
+
 def suite_failing_nodes(
     root: Path,
 ) -> tuple[bool, frozenset[str]]:
@@ -148,13 +193,31 @@ def suite_failing_nodes(
     the captured output, sorted into a ``frozenset`` — no clock, no randomness, so
     the same suite output always yields the same set. Stdlib-only; the runner is
     imported lazily exactly as the rest of this tail does."""
+    available, _valid, nodes = suite_failing_nodes_checked(root)
+    return available, nodes
+
+
+def suite_failing_nodes_checked(
+    root: Path,
+) -> tuple[bool, bool, frozenset[str]]:
+    """:func:`suite_failing_nodes` plus the delta VALIDITY verdict:
+    ``(suite_available, run_valid, failing_node_ids)``.
+
+    ``run_valid`` is :func:`delta_run_valid` for this run — False when the run
+    collapsed (usage error, nothing collected, timeout, pytest never launched)
+    and its node set therefore CANNOT be compared against a baseline. The
+    end-of-session rollback backstop keys off this: diffing a collapsed run's
+    empty node set against a red baseline would read as "no regressions" and
+    silently keep a broken tree. Same single run, same parsing; the plain
+    two-tuple wrapper above stays for callers that don't gate on validity."""
     from app.skills.execution.run_tests import RunTestsSkill
 
     commands = _pytest_failing_cmd(root)
     if not commands:
-        return False, frozenset()
+        return False, False, frozenset()
     summary = RunTestsSkill().run(str(root), commands=commands)
-    return bool(summary.commands), _failing_nodes_of(summary)
+    nodes = _failing_nodes_of(summary)
+    return bool(summary.commands), delta_run_valid(summary, nodes), nodes
 
 
 def suite_after_failing(root: Path) -> tuple[object, frozenset[str]]:
@@ -483,6 +546,15 @@ def _verify_delta_green(
         mark_no_suite(out)
         out["rolled_back"] = False
         return True
+    if not delta_run_valid(summary, after_failing):
+        # The after-run never reached a comparable per-test summary (collapsed
+        # collection, usage error, timeout, pytest never launched). Its
+        # empty/truncated node set would diff against the baseline as "no
+        # regressions" — the exact fake green this gate must never stamp. Fail
+        # CLOSED: unverified, and the caller rolls the change back.
+        out["verified"] = False
+        out["delta_run_invalid"] = True
+        return False
     introduced = regressed_functions(baseline_failing, after_failing)
     # verified == "no previously-green test broke" — the delta-green meaning of the
     # never-fake-green moat. A baseline-red test still red is FORGIVEN; a

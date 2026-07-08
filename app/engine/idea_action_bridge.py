@@ -2774,11 +2774,19 @@ class IdeaActionBridge:
             return RunTestsSkill().run(project_root), None  # type: ignore[return-value]
         from app.execution._apply_verify import (
             delta_green_disclosure,
+            delta_run_valid,
             regressed_functions,
             suite_after_failing,
         )
 
         summary, after_failing = suite_after_failing(Path(project_root))
+        if not delta_run_valid(summary, after_failing):
+            # The after-run collapsed before its per-test summary (usage error,
+            # nothing collected, timeout, pytest never launched) — its node set
+            # cannot be compared to the baseline, and an empty diff would read
+            # as "no regressions": fake green. Fail CLOSED with honest evidence.
+            out["delta_run_invalid"] = True
+            return summary, False
         introduced = regressed_functions(baseline_failing, after_failing)
         out["delta_green"] = delta_green_disclosure(baseline_failing, after_failing)
         return summary, not introduced

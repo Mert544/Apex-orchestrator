@@ -167,6 +167,14 @@ class SessionReport:
     # stand. Only ever ``True`` on a RED baseline that actually applied changes; the
     # GREEN-baseline path gates full-suite per move and never reaches this.
     regression_rolled_back: bool = False
+    # Did the end-of-session backstop's suite RE-RUN itself collapse (usage
+    # error, nothing collected, timeout — pytest never reached its per-test
+    # summary)? Such a run's empty node set is NOT "no regressions"; it measured
+    # nothing. The session is rolled back (fail closed) and this flag discloses
+    # WHY: the backstop could not vouch for the tree, so the tree was restored.
+    # ``False`` (default) = the re-run was comparable and the verdict above is
+    # the real diff.
+    backstop_run_invalid: bool = False
     # The sorted node ids that were GREEN at baseline but RED after the session —
     # the evidence behind a ``regression_rolled_back``. Empty unless a regression
     # was detected (and rolled back), so a clean session's artifact is unchanged.
@@ -402,6 +410,24 @@ def _failing_nodes(root: Path) -> frozenset[str]:
     return nodes
 
 
+def _failing_nodes_checked(root: Path) -> tuple[bool, frozenset[str]]:
+    """``(run_valid, failing_node_ids)`` — the validity-aware re-run the
+    END-OF-SESSION backstop must use.
+
+    ``run_valid`` is False when the re-run COLLAPSED before its per-test summary
+    (usage error, nothing collected, timeout, pytest never launched): its
+    empty/truncated node set would diff against the red baseline as "no
+    regressions" and the backstop would silently keep a possibly-broken tree —
+    the exact hole the backstop exists to close. The caller fails CLOSED on
+    ``False``. Delegates to the shared
+    :func:`app.execution._apply_verify.suite_failing_nodes_checked` so the
+    validity rule is written exactly once."""
+    from app.execution._apply_verify import suite_failing_nodes_checked
+
+    _available, valid, nodes = suite_failing_nodes_checked(root)
+    return valid, nodes
+
+
 def _restore_snapshot(root: Path, before: dict[str, str],
                       after: dict[str, str]) -> None:
     """Roll the tree back to the pre-session ``before`` snapshot, byte-for-byte.
@@ -490,8 +516,18 @@ def _maybe_rollback_regression(
     baseline-green node regressed, RESTORE every file to its pre-session bytes
     (delete created ones) — the sound, transform-agnostic guard. A node already
     failing at baseline is NOT a regression (honest disclosure, never
-    over-rollback). Caller invokes this ONLY on a red baseline that changed files."""
-    after_failing = _failing_nodes(root)
+    over-rollback). Caller invokes this ONLY on a red baseline that changed files.
+
+    FAIL-CLOSED on an invalid re-run: when the re-run collapses before its
+    per-test summary (usage error, nothing collected, timeout), its node set is
+    not comparable — diffing it would read "no regressions" off a run that
+    never measured anything. The session is rolled back and the collapse is
+    disclosed (``backstop_run_invalid``), never silently kept."""
+    run_valid, after_failing = _failing_nodes_checked(root)
+    if not run_valid:
+        _restore_and_zero(report, root, before, after)
+        report.backstop_run_invalid = True
+        return before
     regressed = _regressed_nodes(baseline_failing, after_failing)
     if not regressed:
         return after
