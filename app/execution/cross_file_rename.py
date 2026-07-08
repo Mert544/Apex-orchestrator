@@ -519,9 +519,9 @@ def _verify_scoped(root: Path, plan: RenamePlan,
     import os
     from app.execution.target_env import inherited_pythonpath
     import subprocess
-    import sys
 
     from app.engine.test_impact import impacted_test_files
+    from app.skills.execution.run_tests import RunTestsSkill
 
     impacted = impacted_test_files(root, list(plan.new_contents) + plan.derived_from)
     if not impacted:
@@ -544,8 +544,20 @@ def _verify_scoped(root: Path, plan: RenamePlan,
     flags = ["-p", "no:cacheprovider"]
     flags = (["--continue-on-collection-errors", *flags] if delta
              else ["-x", *flags])
+    # INTERPRETER + PATH PARITY with the full-suite runner (audit 2026-07-08,
+    # finding 3): this gate used to run ``sys.executable`` — Apex's OWN Python —
+    # while the baseline capture, the full-suite gate, and the pytest-missing
+    # probe all use the TARGET's ``.venv`` when present. On an external project
+    # whose deps live only in its venv, the impacted tests would then SKIP
+    # (``importorskip``) or collection-error under Apex's interpreter: a fake
+    # green or a false red the other gates would never produce. Same for the
+    # PYTHONPATH: the runner also serves a genuine separated ``src``/``lib``
+    # flat-module dir (``_import_roots``); with only ``root`` on the path a
+    # scoped run on that layout collection-errors and every landing is vetoed.
+    runner = RunTestsSkill()
     proc = subprocess.run(
-        [sys.executable, "-m", "pytest", "-q", *flags, *deselect, *impacted],
+        [runner._python_for(root), "-m", "pytest", "-q",
+         *flags, *deselect, *impacted],
         cwd=str(root), capture_output=True, text=True, env={
             **os.environ,
             # Never write ``.pyc`` for the project under test. CPython's default
@@ -556,7 +568,9 @@ def _verify_scoped(root: Path, plan: RenamePlan,
             # behaviour and miss a real regression NON-deterministically. Mirrors
             # the import-oracle / test-shield probes, which already set this.
             "PYTHONDONTWRITEBYTECODE": "1",
-            "PYTHONPATH": str(root) + os.pathsep + inherited_pythonpath()})
+            "PYTHONPATH": os.pathsep.join(
+                p for p in [*runner._import_roots(root), inherited_pythonpath()]
+                if p)})
     if not delta:
         ok = proc.returncode == 0
         return ok, {"scoped": True, "tests": impacted,
