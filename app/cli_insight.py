@@ -20,9 +20,15 @@ if TYPE_CHECKING:
 
 # --------------------------------------------------------------------------- #
 # quickstart — the 60-second on-ramp: one READ-ONLY command that composes
-# EXISTING engines (grade, the idea/roadmap engine, the action bridge's
-# report-mode scout) to show a new user Apex's value on THEIR project, in one
-# motion. No new analysis is invented here.
+# EXISTING engines (grade, plus the same bounded idea/roadmap scout ``apex
+# auto`` uses) to show a new user Apex's value on THEIR project, in one
+# motion. No new analysis is invented here. The "landable" number is the
+# bounded scout's count, honestly LABELED as such — quickstart does NOT run
+# the full ``apex develop session`` enumeration, because that pass is minutes
+# on a large repo and would break the 60-second promise (see
+# ``_quickstart_landable`` for the measured evidence). The output points to
+# ``apex develop`` for the full enumeration instead of pretending the two
+# numbers are the same.
 # --------------------------------------------------------------------------- #
 
 _QUICKSTART_BANNER = "Zero-token · offline · deterministic · never-fake-green."
@@ -97,10 +103,24 @@ def _quickstart_opportunities(report) -> list[dict]:
 
 
 def _quickstart_landable(report, target: Path) -> int:
-    """How many safe, executable moves are available right now — the SAME
-    scout ``cmd_auto`` runs (``IdeaActionBridge().plan_roadmap(report,
-    mode="report", ...)``): report mode, no draft/apply, so this never
-    writes anywhere."""
+    """How many executable moves the bounded quickstart scout can see — the
+    roadmap's ``executable_steps`` over the SAME capped idea tree
+    ``_quickstart_report`` already built (20 ideas / depth 1 / breadth 3), so
+    quickstart pays for ONE cheap scout pass, not two engines.
+
+    HONESTY NOTE — this is a DIFFERENT, smaller engine than the enumeration
+    ``apex develop session`` runs, and the two counts genuinely diverge (a
+    live run on this repo showed 17 vs. 76). Unifying them was tried and
+    REJECTED on measured evidence: ``run_develop_session(apply=False)`` took
+    120s even bounded to ``max_steps=1`` and 5+ minutes unbounded on a
+    630-module repo — a per-move whole-project re-parse cost that breaks the
+    60-second on-ramp promise outright. The fix is in the LABEL, not the
+    engine: ``_quickstart_landable_line`` names this number as the bounded
+    scout's count and points to ``apex develop`` for the full enumeration,
+    so no equality between the two is ever claimed.
+
+    Defensively wrapped: any failure collapses to 0 (honest empty), never
+    raises."""
     if report is None:
         return 0
     from app.engine.idea_action_bridge import IdeaActionBridge
@@ -108,9 +128,25 @@ def _quickstart_landable(report, target: Path) -> int:
     try:
         plan = IdeaActionBridge().plan_roadmap(
             report, mode="report", project_root=str(target))
-        return plan.stats.get("executable_steps", 0)
+        return int(plan.stats.get("executable_steps", 0))
     except Exception:
         return 0
+
+
+def _quickstart_suite_detected(target: Path) -> bool:
+    """Whether a test suite is DETECTABLE for this project — a pure,
+    filesystem-only check (config files / ``tests/`` dir / a flat
+    pytest-discoverable layout), no subprocess and no test run. Backs the
+    honest per-suite-state wording below: quickstart must never promise
+    test-verification a suite-less project cannot earn. Defensively wrapped:
+    any failure reads as "no suite detected" — the conservative,
+    never-fake-green reading."""
+    from app.skills.execution.run_tests import RunTestsSkill
+
+    try:
+        return bool(RunTestsSkill()._detect_commands(target))
+    except Exception:
+        return False
 
 
 def _quickstart_next_steps(target_arg: str) -> list[str]:
@@ -122,6 +158,33 @@ def _quickstart_next_steps(target_arg: str) -> list[str]:
         f"apex develop --target {target_arg} --apply",
         f"apex dashboard --target {target_arg}",
     ]
+
+
+def _quickstart_landable_line(landable_count: int, suite_detected: bool) -> str:
+    """The one honest "what Apex can land right now" sentence — worded per
+    whether a test suite is DETECTABLE, so quickstart never promises
+    test-verification a suite-less project cannot earn (never-fake-green).
+
+    With a detectable suite: each move will be test-verified on ``--apply``
+    (suite-gated, auto-rollback) — the TIER_VERIFIED/TIER_WEAK story
+    ``apex develop`` carries through. With NO detectable suite: say so
+    plainly — a landed move would carry the ``no-suite`` tier, unverified,
+    never dressed up as "test-verified".
+
+    The count is also honestly ATTRIBUTED: it is the bounded quickstart
+    scout's number, not ``apex develop``'s full enumeration (a different,
+    bigger engine — see ``_quickstart_landable``), so the line names its
+    source and points to ``apex develop`` for the full count instead of
+    implying the two are equal."""
+    if suite_detected:
+        return (
+            f"{landable_count} move(s) found by the bounded quickstart scout "
+            "— full enumeration: `apex develop` (preview); each lands "
+            "test-verified on --apply (suite-gated, auto-rollback).")
+    return (
+        f"{landable_count} move(s) found by the bounded quickstart scout — "
+        "no test suite detected: moves would land unverified (no-suite "
+        "tier). Full enumeration: `apex develop` (preview).")
 
 
 def _render_quickstart(data: dict) -> list[str]:
@@ -139,10 +202,8 @@ def _render_quickstart(data: dict) -> list[str]:
         lines.append("_No opportunities yet — this project may be new or very small._")
     lines.append("")
     lines.append("## What Apex can land right now")
-    lines.append(
-        f"{data['landable_count']} safe move(s) available — preview with "
-        "`apex develop` (report-only), apply with `apex develop --apply` "
-        "(each test-verified, auto-rolled-back).")
+    lines.append(_quickstart_landable_line(
+        data["landable_count"], data["suite_detected"]))
     lines.append("")
     lines.append("## Next steps")
     lines.extend(f"- `{cmd}`" for cmd in data["next_steps"])
@@ -151,12 +212,14 @@ def _render_quickstart(data: dict) -> list[str]:
 
 def cmd_quickstart(args: argparse.Namespace) -> int:
     """The 60-second on-ramp, as ONE motion: health grade, top opportunities,
-    and what Apex can safely land right now — composed entirely from existing,
-    already-deterministic engines (``health_score.grade``, the idea/roadmap
-    engine, the action bridge's report-mode scout).
+    and what the bounded scout says Apex can land right now — composed
+    entirely from existing, already-deterministic engines
+    (``health_score.grade`` and the capped idea/roadmap scout). The landable
+    number is labeled as the scout's count and defers to ``apex develop``
+    for the full enumeration (see ``_quickstart_landable``).
 
-    STRICTLY READ-ONLY: every call below is report-mode / draft-off, so this
-    never applies a fix and never snapshots — a pure measurement, like
+    STRICTLY READ-ONLY: every call below is report-mode / dry-run / draft-off,
+    so this never applies a fix and never snapshots — a pure measurement, like
     ``apex grade``. Deterministic: no clock/random touches the output, so the
     same project yields byte-identical output run after run.
     """
@@ -170,6 +233,7 @@ def cmd_quickstart(args: argparse.Namespace) -> int:
         "breakdown": health["breakdown"],
         "top_opportunities": _quickstart_opportunities(report),
         "landable_count": _quickstart_landable(report, target),
+        "suite_detected": _quickstart_suite_detected(target),
         "next_steps": _quickstart_next_steps(raw_target or "."),
     }
 
