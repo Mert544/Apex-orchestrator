@@ -29,6 +29,59 @@ def _load(script_name: str):
     return mod
 
 
+# --- verify.py: heavy-solo quarantine + impacted selection (dev-velocity) -------
+
+def test_split_heavy_partitions_without_loss():
+    v = _load("verify.py")
+    files = [v.ROOT / "tests" / "test_a.py",
+             v.ROOT / "tests" / "test_stub_fstring_body_eyml.py",
+             v.ROOT / "tests" / "test_b.py"]
+    pool, solos = v.split_heavy(files)
+    assert [p.name for p in pool] == ["test_a.py", "test_b.py"]
+    assert [p.name for p in solos] == ["test_stub_fstring_body_eyml.py"]
+    # No loss, no duplication — every file lands on exactly one side.
+    assert sorted(pool + solos, key=str) == sorted(files, key=str)
+
+
+def test_split_heavy_defaults_cover_the_known_flake():
+    # The quarantine list must actually contain the 3×-flaked file; an empty
+    # or typo'd HEAVY_SOLO would silently put it back into the contention pool.
+    v = _load("verify.py")
+    assert "tests/test_stub_fstring_body_eyml.py" in v.HEAVY_SOLO
+    discovered = v.discover_tests()
+    pool, solos = v.split_heavy(discovered)
+    assert any(p.name == "test_stub_fstring_body_eyml.py" for p in solos)
+    assert not any(p.name == "test_stub_fstring_body_eyml.py" for p in pool)
+
+
+def test_impacted_selection_maps_changes_through_reachability(tmp_path):
+    # Pure mapping check on a tmp project: a changed module selects the test
+    # that imports it; a changed test selects itself; an uncovered module is
+    # DISCLOSED, never silently dropped (never-fake-green on the fast gate).
+    v = _load("verify.py")
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "pkg" / "core.py").write_text(
+        "def f():\n    return 1\n", encoding="utf-8")
+    (tmp_path / "pkg" / "lonely.py").write_text(
+        "def g():\n    return 9\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_core.py").write_text(
+        "from pkg.core import f\n\n\ndef test_f():\n    assert f() == 1\n",
+        encoding="utf-8")
+    files, uncovered = v.impacted_selection(
+        ["pkg/core.py", "pkg/lonely.py", "tests/test_core.py", "README.md"],
+        root=tmp_path)
+    assert [p.name for p in files] == ["test_core.py"]
+    assert uncovered == ["pkg/lonely.py"]
+
+
+def test_impacted_selection_empty_changes_run_nothing(tmp_path):
+    v = _load("verify.py")
+    files, uncovered = v.impacted_selection([], root=tmp_path)
+    assert files == [] and uncovered == []
+
+
 # --- gate_runner: chunk-key purity ---------------------------------------------
 
 def test_chunk_key_is_pure():

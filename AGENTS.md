@@ -78,6 +78,32 @@ python -m app.main
 python -m app.mcp.server
 ```
 
+### Wave-efficiency discipline (founder, 2026-07-08 — LOCKED)
+
+The target of this discipline is OUR develop loop's wall-clock (the
+change→verify→push cycle), not Apex's runtime. Time spent waiting on
+verification mid-wave is time stolen from developing Apex.
+
+1. **Iterate with the impacted gate, push behind the full gate.**
+   `python scripts/verify.py --impacted` runs only the test files whose
+   imports reach your changes (Apex's own reachability engine: transitive
+   imports, conftest fixtures, literal dynamic imports) — minutes, not ~40.
+   It prints, loudly, that it is NOT the push gate and which changed files no
+   test reaches. The full gate (`--chunks 16 -j 4`) runs ONCE per wave,
+   before push. Never push on impacted-green alone.
+2. **Subagents never run the full gate.** An agent verifies with targeted
+   suites + `ruff` only; the orchestrator runs the ONE canonical full gate at
+   integration. (Evidence: a 4h12m agent spent ~3h re-running suites the
+   integration gate re-proved anyway.)
+3. **Contention-heavy tests are quarantined, not re-proven per gate.**
+   `HEAVY_SOLO` in `scripts/verify.py` lists files that flake under full-CPU
+   chunk contention while passing alone; they run solo after the parallel
+   phase. Add a file only with evidence (≥2 independent -j4 flakes, each
+   isolated-green) — never to hide a real failure.
+4. **Waves stay small: one concern, one gate, one push.** A long run is many
+   small verified iterations with ONE full gate at the end — not many full
+   gates.
+
 ## Architecture Decisions
 
 ### 1. No Mandatory External Dependencies
