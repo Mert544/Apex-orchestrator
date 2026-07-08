@@ -40,9 +40,19 @@ __all__ = [
     "bool_return_fitness", "magic_constant_fitness",
     "compile_objective", "compile_all", "run_moves", "available_objectives",
     "ALL_OBJECTIVES", "SESSION_OBJECTIVES",
+    "BACKSTOP_CLEAN", "BACKSTOP_INVALID", "BACKSTOP_REGRESSED",
     "render_compile_markdown", "render_from_dream_markdown", "render_all_markdown",
     "resolve_objective", "objective_synonyms",
 ]
+
+
+# The END-OF-CAMPAIGN regression-backstop verdicts a STANDALONE gated apply can
+# carry on ``CompileResult.regression_backstop`` (empty string = the backstop
+# did not run: dry run, --no-verify, suite-less project, a caller-owned
+# baseline — the develop session — or a campaign that changed nothing).
+BACKSTOP_CLEAN = "clean"                        # re-run comparable; no baseline-green test regressed
+BACKSTOP_REGRESSED = "regression-rolled-back"   # a baseline-green test regressed; every changed file restored
+BACKSTOP_INVALID = "invalid-run-rolled-back"    # the re-run collapsed; fail CLOSED — every changed file restored
 
 
 @dataclass
@@ -169,6 +179,21 @@ class CompileResult:
     # on a later pass). Empty for every run that did not arm ``avoid_aware`` (the
     # default), so ``to_dict()`` stays byte-identical (mirrors ``withheld``).
     avoided: list[str] = field(default_factory=list)
+    # END-OF-CAMPAIGN regression-BACKSTOP verdict (see the ``BACKSTOP_*``
+    # constants). A STANDALONE gated apply (``apply and verify`` with NO
+    # caller-supplied ``baseline_failing`` — the develop session supplies one and
+    # runs its OWN end-of-session backstop) re-runs the suite ONCE after the
+    # campaign and diffs failing nodes at test-function granularity against the
+    # up-front baseline: a baseline-green test now red rolls the WHOLE campaign
+    # back (every changed file restored, ``steps`` emptied — no phantom
+    # contributions); a collapsed re-run fails CLOSED the same way. ``""`` (the
+    # default) = the backstop did not run, so every existing construction stays
+    # valid and a dry / --no-verify / suite-less / session-driven campaign's
+    # ``to_dict()`` is byte-identical (mirrors ``withheld``/``avoided``).
+    regression_backstop: str = ""
+    # The sorted node ids that were GREEN at baseline but RED after the campaign
+    # — the evidence behind a ``BACKSTOP_REGRESSED`` verdict. Empty otherwise.
+    backstop_regressed_nodes: list[str] = field(default_factory=list)
 
     @property
     def improved(self) -> bool:
@@ -206,6 +231,13 @@ class CompileResult:
         if self.verification_unavailable:
             d["verification_unavailable"] = self.verification_unavailable
             d["pytest_interpreter"] = self.pytest_interpreter
+        # Purely ADDITIVE: appears only when the end-of-campaign regression
+        # backstop actually RAN (a standalone gated apply that changed files on a
+        # suite-carrying project), so every other campaign is byte-identical.
+        if self.regression_backstop:
+            d["regression_backstop"] = self.regression_backstop
+            if self.backstop_regressed_nodes:
+                d["backstop_regressed_nodes"] = list(self.backstop_regressed_nodes)
         return d
 
 
@@ -1382,6 +1414,130 @@ def _campaign_baseline(root: str, apply: bool, verify: bool,
     return failing or None
 
 
+@dataclass
+class _BackstopState:
+    """What the end-of-campaign regression backstop captured UP FRONT: the
+    baseline failing-node set (the pre-existing reds it must tolerate) and the
+    byte snapshot of every own ``.py`` file (the restore target on a rollback)."""
+    baseline_failing: frozenset[str]
+    before: dict[str, str]
+
+
+def _arm_backstop(root: str) -> _BackstopState | None:
+    """Arm the END-OF-CAMPAIGN regression backstop for a STANDALONE gated apply.
+
+    Called ONLY on the ``apply and verify`` path with no caller-supplied
+    baseline (see :func:`_campaign_baseline_and_backstop`). Probes the suite
+    ONCE (:func:`~app.execution._apply_verify.suite_failing_nodes` — the same
+    probe :func:`_campaign_baseline` paid, so the campaign still pays exactly one
+    baseline run) and snapshots the tree byte-for-byte via the shared LEAF
+    :func:`app.engine.tree_snapshot.snapshot_py_tree` (the develop session's own
+    capture, extracted so both backstops restore identically). Returns ``None``
+    when NO suite is detectable — there is no baseline to diff, and the honest
+    ``no-suite`` tier already carries that disclosure. Deterministic: one sorted
+    probe + one sorted walk, no clock/random."""
+    from app.engine.tree_snapshot import snapshot_py_tree
+    from app.execution._apply_verify import suite_failing_nodes
+
+    available, failing = suite_failing_nodes(Path(root))
+    if not available:
+        return None
+    return _BackstopState(baseline_failing=failing,
+                          before=snapshot_py_tree(Path(root)))
+
+
+def _campaign_baseline_and_backstop(
+    root: str, apply: bool, verify: bool,
+    baseline_failing: frozenset[str] | None,
+) -> tuple[frozenset[str] | None, _BackstopState | None]:
+    """``(gate_baseline, backstop_state)`` — at most ONE suite probe.
+
+    The gate baseline is byte-identical to :func:`_campaign_baseline` in every
+    case (a caller-supplied set is honored verbatim; a gated apply probes once;
+    a dry / ``--no-verify`` run never gates). The backstop is armed ONLY for the
+    STANDALONE gated apply (``apply and verify`` with ``baseline_failing is
+    None``): a caller that supplied its baseline — the develop session — owns
+    its OWN end-of-session backstop, so arming a second one here would double
+    the suite runs and split the rollback authority. The standalone probe is
+    SHARED between the gate and the backstop, so no second baseline run is ever
+    paid."""
+    if baseline_failing is not None or not (apply and verify):
+        return _campaign_baseline(root, apply, verify, baseline_failing), None
+    backstop = _arm_backstop(root)
+    if backstop is None:
+        # No detectable suite: the gate baseline is None (nothing was failing —
+        # nothing ran), exactly what _campaign_baseline's probe returned before.
+        return None, None
+    return (backstop.baseline_failing or None), backstop
+
+
+def _backstop_restore(result: CompileResult, root: str,
+                      backstop: _BackstopState, after: dict[str, str],
+                      verdict: str, reason: str) -> None:
+    """Roll the WHOLE campaign back to its pre-campaign bytes and record why.
+
+    Restores every changed file (deletes created ones) via the shared LEAF
+    :func:`app.engine.tree_snapshot.restore_py_tree`, stamps the verdict, empties
+    ``steps`` (the tree is back at baseline — reporting landed moves would be
+    phantom contributions, mirroring the session's ``_restore_and_zero``), resets
+    ``fitness_end`` (no debt was actually cleared), and appends a rollback-shaped
+    ``blocked`` reason (the word "restored" is what chain/goal consumers key
+    their red-halt detection off — see ``chain_compiler._step_is_red``)."""
+    from app.engine.tree_snapshot import restore_py_tree
+
+    restore_py_tree(Path(root), backstop.before, after)
+    result.regression_backstop = verdict
+    result.steps.clear()
+    result.fitness_end = result.fitness_start
+    result.blocked.append(reason)
+
+
+def _finish_regression_backstop(result: CompileResult, root: str,
+                                backstop: _BackstopState | None) -> None:
+    """The END-OF-CAMPAIGN transitive-regression backstop (standalone applies).
+
+    The per-move gate already ran, but an impact-SCOPED gate (``--fast`` / a
+    spec-flagged objective like implement-stub) is blind to a previously-GREEN
+    test reachable only TRANSITIVELY — a behaviour-changing transform can break
+    it and the move lands unnoticed, and (pre-fix) NOTHING ever re-checked a
+    standalone campaign. So: if files changed, re-run the suite ONCE, diff its
+    failing nodes against the up-front baseline at TEST-FUNCTION granularity
+    (:func:`~app.execution._apply_verify.regressed_functions` — a pre-existing
+    red is tolerated, never charged), and restore EVERY changed file on a
+    regression. FAIL-CLOSED on a collapsed re-run (``suite_failing_nodes_checked``
+    invalid): its empty node set measured nothing, so it must never read as "no
+    regressions" — the campaign is restored and the collapse disclosed. No-op
+    when the backstop was never armed or nothing landed, so every other path is
+    byte-identical."""
+    if backstop is None or not result.steps:
+        return
+    from app.engine.tree_snapshot import snapshot_py_tree
+    from app.execution._apply_verify import (
+        regressed_functions,
+        suite_failing_nodes_checked,
+    )
+
+    after = snapshot_py_tree(Path(root))
+    if after == backstop.before:
+        return  # nothing changed on disk — nothing to re-verify
+    _available, run_valid, after_failing = suite_failing_nodes_checked(Path(root))
+    if not run_valid:
+        _backstop_restore(
+            result, root, backstop, after, BACKSTOP_INVALID,
+            "end-of-campaign backstop: the verification re-run collapsed before "
+            "any per-test result; files restored (fail closed)")
+        return
+    regressed = regressed_functions(backstop.baseline_failing, after_failing)
+    if not regressed:
+        result.regression_backstop = BACKSTOP_CLEAN
+        return
+    _backstop_restore(
+        result, root, backstop, after, BACKSTOP_REGRESSED,
+        "end-of-campaign backstop: a previously-GREEN test regressed after the "
+        "campaign; files restored")
+    result.backstop_regressed_nodes = sorted(regressed)
+
+
 def _value_aware_signals(
     root: str, value_aware: bool,
 ) -> tuple[dict[str, int] | None, dict[str, int] | None, dict[str, float] | None]:
@@ -1522,7 +1678,16 @@ def compile_objective(project_root: str | Path, objective: str = "dead-params",
     one): the two compose freely — risk-aware still tries every move, just in a
     safer order, while avoid-aware refuses the ones with strong rollback
     evidence outright. An empty/missing proof history flags nothing, so a fresh
-    project's campaign is unaffected even with the guard armed."""
+    project's campaign is unaffected even with the guard armed.
+
+    END-OF-CAMPAIGN REGRESSION BACKSTOP: a STANDALONE gated apply (``apply and
+    verify`` with no caller-supplied ``baseline_failing``) re-runs the suite
+    ONCE after the campaign and rolls EVERYTHING back if a baseline-GREEN test
+    regressed — the transitive hole an impact-scoped per-move gate cannot see
+    (see :func:`_finish_regression_backstop`; the verdict is disclosed on
+    ``result.regression_backstop``). A caller that supplied its baseline (the
+    develop session) runs its own end-of-session backstop, so this one stands
+    down there — never two rollback authorities over one tree."""
     objectives = _objectives_map()
     objective_name, blocked = _resolve_compile_target(objective, objectives)
     if objective_name is None:
@@ -1604,7 +1769,11 @@ def compile_objective(project_root: str | Path, objective: str = "dead-params",
     # honored from the caller) and threaded to every move's gate, so a correct move
     # lands on a project red on checkout while a true regression is still rolled
     # back. None on a green baseline / dry run ⇒ absolute-green, byte-identical.
-    campaign_baseline = _campaign_baseline(root, apply, verify, baseline_failing)
+    # The SAME single probe also arms the END-OF-CAMPAIGN regression backstop for
+    # a STANDALONE gated apply (see _campaign_baseline_and_backstop) — a caller
+    # that supplied its baseline (the develop session) runs its own backstop.
+    campaign_baseline, backstop = _campaign_baseline_and_backstop(
+        root, apply, verify, baseline_failing)
     # COVERED-ONLY / AVOID-AWARE: the per-campaign set of already-withheld and/or
     # avoid-flagged move targets, so a candidate that re-surfaces every pass is
     # skipped (not re-run/double-counted or re-announced). None when BOTH gates
@@ -1624,9 +1793,14 @@ def compile_objective(project_root: str | Path, objective: str = "dead-params",
             break
 
     result.fitness_end = current
+    # END-OF-CAMPAIGN regression backstop (standalone gated applies only): may
+    # restore every changed file and empty ``steps`` — so it runs BEFORE the
+    # composition/playbook learning below, which must never credit a campaign
+    # whose contributions did not hold.
+    _finish_regression_backstop(result, root, backstop)
     _record_composition(result, root)
     if apply and result.steps:
-        _archive_campaign(result, root, objective, start, current)
+        _archive_campaign(result, root, objective, start, result.fitness_end)
     return result
 
 
@@ -1647,7 +1821,11 @@ def run_moves(project_root: str | Path, moves: list[Move], *,
     the caller opts in). Fitness here is the COUNT of supplied moves (one unit of
     debt per move; monotone like the objective loop), so the report reads identically
     to a single objective's. Deterministic: moves are taken in the given order — the
-    primitive owns the (sorted) ordering, this runner never re-sorts."""
+    primitive owns the (sorted) ordering, this runner never re-sorts. A gated apply
+    also carries the SAME end-of-campaign regression backstop as
+    :func:`compile_objective` (see :func:`_finish_regression_backstop`) — run_moves
+    is a standalone applied path too, so a transitive regression its impact-scoped
+    gate missed is re-checked once and restored, never silently kept."""
     from app.engine.idea_memory import IdeaMemory
 
     root = str(project_root)
@@ -1657,10 +1835,16 @@ def run_moves(project_root: str | Path, moves: list[Move], *,
     if not apply:
         return _fill_dry_run(result, moves[:max_steps], start, max_steps)
     memory = IdeaMemory.load(root)
+    # The SAME end-of-campaign regression backstop compile_objective carries:
+    # run_moves is a standalone gated apply too (no caller-owned baseline), so a
+    # transitive regression its impact-scoped gate missed must be re-checked and
+    # restored, never silently kept. Un-gated runs (``verify=False``) arm nothing.
+    backstop = _arm_backstop(root) if verify else None
     _progressed, current, _last = _run_pass(
         result, moves, root, start, max_steps, verify, scope_verify,
         last_operator="", memory=memory)
     result.fitness_end = current
+    _finish_regression_backstop(result, root, backstop)
     _record_composition(result, root)
     return result
 
@@ -1715,11 +1899,20 @@ def _record_composition(result: CompileResult, project_root: str) -> None:
         pass  # learning is best-effort; never fail a successful compile on it
 
 
-def _compile_tier_tag(s: CompileStep) -> str:
+def _compile_tier_tag(s: CompileStep, applied: bool = True) -> str:
     """Honest per-move tag: a green suite is only "verified" when a test actually
     EXERCISED the change (function/module/test-change). A green-but-unreferencing
     suite (``coverage == none``) is disclosed as a weak tier, and a suite-less
-    apply as ``no-suite`` — never blended with a genuine verified move."""
+    apply as ``no-suite`` — never blended with a genuine verified move.
+
+    ``applied=False`` (a DRY-RUN result — keyed off ``CompileResult.applied``)
+    takes the PREVIEW branch instead: a projected step was never applied and no
+    suite ran, so its raw ``verified=False`` must never read as ``no-suite``
+    ("applied, nothing verified it" — both claims false on a preview of a
+    suite-carrying project). The default keeps every applied render, and every
+    existing one-arg caller, byte-identical."""
+    if not applied:
+        return " 🔍 preview — not applied yet; will be test-verified on --apply"
     if s.coverage_verified:
         return " ✅ tests pass (covered)"
     if s.verified:
@@ -1742,8 +1935,16 @@ def _compile_breakdown(result: CompileResult, verb: str) -> str:
     The verified/weak/no-suite split keeps the honest never-fake-green tier (only
     a test-COVERED move counts as "verified"). The mean buyer-value is appended
     only when value-aware selection recorded values — omitted for every default
-    campaign, so the headline is byte-identical there."""
+    campaign, so the headline is byte-identical there.
+
+    A DRY-RUN result takes the PREVIEW branch: nothing was applied and no suite
+    ran, so a "0 verified, N no-suite" split would be false twice over (the
+    audited "48 moves, ALL no-suite" confusion) — the honest headline says the
+    moves are projected and will be gated on ``--apply``."""
     landed = len(result.steps)
+    if not result.applied:
+        return (f"{verb.lower()} {landed} move(s) — preview: not applied yet; "
+                "each will be test-verified on --apply")
     verified = sum(1 for s in result.steps if s.coverage_verified)
     weak = sum(1 for s in result.steps if s.verified and not s.coverage_verified)
     no_suite = landed - verified - weak
@@ -1756,6 +1957,25 @@ def _compile_breakdown(result: CompileResult, verb: str) -> str:
     if valued:
         breakdown += f", mean buyer-value {sum(valued) / len(valued):.2f}"
     return breakdown
+
+
+def _backstop_disclosure_line(result: CompileResult) -> str:
+    """The loud end-of-campaign backstop rollback disclosure, per verdict.
+
+    Two distinct shapes, mirroring the session's wording discipline: a genuine
+    regression NAMES the previously-GREEN node(s) that went red; a collapsed
+    re-run says plainly that nothing could vouch for the tree, so it was
+    restored fail-closed — never read as "no regressions"."""
+    if result.regression_backstop == BACKSTOP_INVALID:
+        return ("⚠️ End-of-campaign backstop: the verification re-run collapsed "
+                "before any per-test result, so it could not vouch for the tree "
+                "— the campaign was ROLLED BACK to its pre-campaign bytes "
+                "(fail closed); no move landed.")
+    nodes = ", ".join(f"`{n}`" for n in result.backstop_regressed_nodes)
+    detail = f" ({nodes})" if nodes else ""
+    return ("⚠️ End-of-campaign backstop: a previously-GREEN test "
+            f"regressed{detail} — the campaign was ROLLED BACK to its "
+            "pre-campaign bytes (auto-rollback); no move landed.")
 
 
 def render_compile_markdown(result: CompileResult) -> str:
@@ -1776,15 +1996,23 @@ def render_compile_markdown(result: CompileResult) -> str:
         lines.append(f"⚠️ {result.verification_unavailable}")
         lines.append("")
         return "\n".join(lines)
-    if result.blocked and not result.steps:
+    rolled_back = result.regression_backstop in (BACKSTOP_REGRESSED,
+                                                 BACKSTOP_INVALID)
+    if result.blocked and not result.steps and not rolled_back:
         lines.append(f"_No improving move available. Fitness: {result.fitness_start:g}._")
     lines.append(
         f"Fitness {result.fitness_start:g} → **{result.fitness_end:g}** "
         f"({_compile_breakdown(result, verb)})."
     )
     lines.append("")
+    if rolled_back:
+        # The end-of-campaign backstop restored the tree — say so loudly (the
+        # honest sibling of the session's auto-rollback disclosure), never let
+        # the empty step list read as "nothing to do".
+        lines.append(_backstop_disclosure_line(result))
+        lines.append("")
     for i, s in enumerate(result.steps, 1):
-        tick = _compile_tier_tag(s)
+        tick = _compile_tier_tag(s, result.applied)
         lines.append(f"{i}. {s.description} — {s.fitness_before:g}→{s.fitness_after:g}{tick}")
     if result.blocked:
         lines.append("")

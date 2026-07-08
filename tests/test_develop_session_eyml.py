@@ -790,18 +790,34 @@ def test_transitive_regression_on_red_baseline_is_rolled_back(tmp_path: Path):
     assert "every objective is already satisfied" not in md
 
 
-def test_transitive_regression_actually_lands_without_the_backstop(tmp_path: Path):
+def test_transitive_regression_actually_lands_without_the_backstop(
+        tmp_path: Path, monkeypatch):
     # Proves the violation EXISTS: with the per-move impact-scoped gate alone (no
-    # end-of-session baseline-diff backstop), the behaviour-changing modernize move
+    # baseline-diff backstop of ANY kind), the behaviour-changing modernize move
     # LANDS — its own in-scope test still passes — and the transitive green test is
-    # broken and silently kept. This is exactly what the backstop now catches.
+    # broken and silently kept. This is exactly what the backstops catch.
+    #
+    # UPDATED (2026-07-08 audit fix): standalone ``compile_objective`` applies now
+    # carry their OWN end-of-campaign regression backstop, so the raw call no
+    # longer exhibits the hole (see tests/test_campaign_regression_backstop_eyml
+    # .py, which pins that rollback end-to-end). To keep this test's
+    # non-tautology value — proving the per-move gate alone genuinely misses the
+    # regression, i.e. that BOTH backstops are load-bearing, not decorative — the
+    # standalone backstop is explicitly DISARMED here, recreating the pre-fix
+    # gate-only behaviour.
+    from app.engine import objective_compiler as oc
     from app.engine.objective_compiler import compile_objective
 
+    # Disarm ONLY the end-of-campaign re-check (the per-move gate and its
+    # delta-green baseline stay byte-identical to the pre-fix campaign).
+    monkeypatch.setattr(oc, "_finish_regression_backstop",
+                        lambda result, root, backstop: None)
     _transitive_regression_project(tmp_path)
     result = compile_objective(str(tmp_path), objective="modernize", apply=True,
                                verify=True, scope_verify=True)
     # The move landed (scoped gate saw only check.py's own passing tests).
     assert result.steps
+    assert result.regression_backstop == ""  # gate-only: nothing re-checked
     assert "value is None" in (tmp_path / "pkg" / "check.py").read_text()
     # And the transitive green test is now broken — the silent regression.
     import subprocess
