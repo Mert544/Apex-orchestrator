@@ -103,6 +103,15 @@ verification mid-wave is time stolen from developing Apex.
 4. **Waves stay small: one concern, one gate, one push.** A long run is many
    small verified iterations with ONE full gate at the end — not many full
    gates.
+5. **Model economy (founder, 2026-07-08 — orchestrator/worker pattern).**
+   The session's top model (the orchestrator) does what only it should:
+   decompose, write worker briefs, adversarially review diffs, integrate,
+   gate, push, report. Mechanical execution fans out to CHEAPER/FASTER
+   worker agents (Sonnet-class), each in its own loop with targeted-suite
+   verification per rule 2. Advisor inversion is also sanctioned: a worker
+   loop may call up for advice on demand instead of the orchestrator
+   micro-managing every turn. Never burn orchestrator time (or tokens) on
+   work a worker verifies identically.
 
 ## Architecture Decisions
 
