@@ -5,7 +5,10 @@ name: Apex Autofix
 # `apex maintain`: risk-tiered, test-first-shielded, auto-rolled-back — so a fix
 # on an uncovered line is shielded or blocked, never gambled. If any verified
 # fixes land, it commits them back to the PR branch and posts a summary. Zero
-# tokens, fully offline, deterministic. Copy to .github/workflows/ to adopt it.
+# tokens, fully offline, deterministic. Copy to .github/workflows/ to adopt it
+# — it installs Apex from its own GitHub source automatically (see the
+# ADOPTER branch of the "Install Apex" step below); it does not install your
+# project. The SELF-REPO branch is only taken inside Apex's own CI.
 #
 # Safety:
 #  * Only same-repo PRs run (a fork PR's GITHUB_TOKEN is read-only, so a push
@@ -47,7 +50,22 @@ jobs:
           python-version: '3.11'
 
       - name: Install Apex
-        run: pip install .
+        # SELF-REPO (this workflow running inside Mert544/Apex-orchestrator's
+        # own CI): install the checked-out source, dogfooding the exact code
+        # under test — byte-identical to the pre-existing behavior.
+        # ADOPTER (this file copied into another repo's .github/workflows/):
+        # "pip install ." would install the ADOPTER's own project instead of
+        # Apex — the `apex` console script would be missing (or a same-named
+        # script from the target project would silently run in its place).
+        # Install Apex itself from its pinned GitHub source instead.
+        env:
+          APEX_ADOPTER_REF: main  # pin to a released tag/commit once Apex publishes one (see RELEASING.md)
+        run: |
+          if [ "${{ github.repository }}" = "Mert544/Apex-orchestrator" ]; then
+            pip install .
+          else
+            pip install "git+https://github.com/Mert544/Apex-orchestrator@${APEX_ADOPTER_REF}"
+          fi
 
       # Apply ONLY test-verified, auto-rolled-back fixes on the changed lines and
       # capture the report (findings + "🔧 Applied N fix(es)") for the comment.

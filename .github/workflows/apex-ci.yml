@@ -7,7 +7,9 @@ name: Apex CI
 # and (2) publishes its deterministic findings to the GitHub Security tab as
 # SARIF. Same diff in -> same verdict out, so the gate is reproducible in a way
 # an LLM-based reviewer can never be. Copy this file to .github/workflows/ in
-# any Python repo to adopt it.
+# any Python repo to adopt it — it installs Apex from its own GitHub source
+# automatically (see the ADOPTER branch of the "Install Apex" step below); it
+# does not install your project.
 
 on:
   pull_request:
@@ -35,7 +37,22 @@ jobs:
 
       # Installs the `apex` console script (and `python -m app.cli`).
       - name: Install Apex
-        run: pip install .
+        # SELF-REPO (this workflow running inside Mert544/Apex-orchestrator's
+        # own CI): install the checked-out source, dogfooding the exact code
+        # under test — byte-identical to the pre-existing behavior.
+        # ADOPTER (this file copied into another repo's .github/workflows/):
+        # "pip install ." would install the ADOPTER's own project instead of
+        # Apex — the `apex` console script would be missing (or a same-named
+        # script from the target project would silently run in its place).
+        # Install Apex itself from its pinned GitHub source instead.
+        env:
+          APEX_ADOPTER_REF: main  # pin to a released tag/commit once Apex publishes one (see RELEASING.md)
+        run: |
+          if [ "${{ github.repository }}" = "Mert544/Apex-orchestrator" ]; then
+            pip install .
+          else
+            pip install "git+https://github.com/Mert544/Apex-orchestrator@${APEX_ADOPTER_REF}"
+          fi
 
       # Zero-config quality gate. Exits non-zero when Apex's deterministic
       # detectors find a security/correctness issue or the health grade fails,

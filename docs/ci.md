@@ -30,7 +30,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: pip install .
+      - run: pip install "git+https://github.com/Mert544/Apex-orchestrator@main"  # ADOPTER line: installs APEX, not your project (pin a release tag when one exists). The real apex-ci.yml auto-detects and dogfoods the local source only inside Apex's own SELF-REPO.
       - run: apex gate             # fail the build on a finding / regression
       - if: ${{ always() }}
         run: apex review --base "origin/${{ github.base_ref || 'main' }}" --sarif apex.sarif
@@ -99,5 +99,8 @@ populated even when the gate has already failed the job.
 
 The commands are plain CLI — `apex gate` exits `0`/`1`, `apex review --sarif`
 writes a file. Wire them into GitLab CI, Jenkins, CircleCI, or a pre-merge hook
-the same way: `pip install .`, then run the two commands. Any CI that reads an
-exit code and can store an artifact works.
+the same way — install *Apex*
+(`pip install git+https://github.com/Mert544/Apex-orchestrator@<ref>`), not
+your own project (a bare `pip install .` outside Apex's own repo installs
+whatever project lives at *your* root, not Apex), then run the two commands.
+Any CI that reads an exit code and can store an artifact works.

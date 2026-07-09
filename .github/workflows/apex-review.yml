@@ -2,7 +2,10 @@ name: Apex Review
 
 # Deterministic, offline PR review — no API keys, no per-token cost.
 # Flags security/bug/style/docs issues on the *changed* lines and gates on
-# high-severity findings. Drop this file into any Python repo to use it.
+# high-severity findings. Drop this file into any Python repo to use it —
+# it installs Apex from its own GitHub source automatically (see the
+# ADOPTER branch of the "Install Apex" step below); it does not install your
+# project. The SELF-REPO branch is only taken inside Apex's own CI.
 
 on:
   pull_request:
@@ -27,7 +30,24 @@ jobs:
           python-version: '3.11'
 
       - name: Install Apex
-        run: pip install -e .
+        # SELF-REPO (this workflow running inside Mert544/Apex-orchestrator's
+        # own CI): install the checked-out source, dogfooding the exact code
+        # under test — byte-identical to the pre-existing behavior.
+        # ADOPTER (this file copied into another repo's .github/workflows/):
+        # "pip install -e ." would install the ADOPTER's own project instead
+        # of Apex — the `apex` console script would be missing (or a
+        # same-named script from the target project would silently run in
+        # its place). Install Apex itself from its pinned GitHub source
+        # instead (a non-editable install: an adopter never needs an
+        # editable install of a tool they didn't clone).
+        env:
+          APEX_ADOPTER_REF: main  # pin to a released tag/commit once Apex publishes one (see RELEASING.md)
+        run: |
+          if [ "${{ github.repository }}" = "Mert544/Apex-orchestrator" ]; then
+            pip install -e .
+          else
+            pip install "git+https://github.com/Mert544/Apex-orchestrator@${APEX_ADOPTER_REF}"
+          fi
 
       - name: Run Apex review on the diff
         id: review
