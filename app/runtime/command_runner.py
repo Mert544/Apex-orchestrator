@@ -96,8 +96,23 @@ class CommandRunner:
                 command=list(spec.command),
                 cwd=str(cwd),
                 returncode=124,
-                stdout=exc.stdout or "",
-                stderr=exc.stderr or "",
+                stdout=_timeout_text(exc.stdout),
+                stderr=_timeout_text(exc.stderr),
                 duration_seconds=round(time.monotonic() - started, 4),
                 timed_out=True,
             )
+
+
+def _timeout_text(captured: object) -> str:
+    """Normalize ``TimeoutExpired.stdout``/``.stderr`` to the ``str`` contract.
+
+    CPython hands the timeout exception the RAW captured bytes even when the
+    run was opened with ``text=True`` (only the successful-completion path
+    decodes), so without this every downstream consumer of a timed-out
+    ``CommandResult`` — failing-node parsing, delta-run validity, passed-count
+    scans — meets ``bytes`` where the dataclass promises ``str`` and dies on
+    ``str + bytes``. Found live by dogfooding ``apex develop --apply`` on
+    Apex's own tree, whose backstop-baseline suite run times out."""
+    if isinstance(captured, bytes):
+        return captured.decode("utf-8", errors="replace")
+    return captured or ""
