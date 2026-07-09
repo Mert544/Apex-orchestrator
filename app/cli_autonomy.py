@@ -1313,7 +1313,8 @@ def _develop_auto(args, target, grade_before, max_steps, verify, apply) -> int:
                                    min_move_value=_min_move_value(args),
                                    scope_module=scope_module,
                                    covered_only=covered_only,
-                                   risk_aware=getattr(args, "risk_aware", False))
+                                   risk_aware=getattr(args, "risk_aware", False),
+                                   manifesto_aware=getattr(args, "manifesto_aware", False))
         if (result.steps or result.fitness_start > 0
                 or result.verification_unavailable):
             # Retain a verification-unavailable decline so `apex develop --auto`
@@ -1662,6 +1663,7 @@ def _develop_objective(args, target, objective, grade_before, max_steps, verify,
         str(target), objective=objective, max_steps=max_steps,
         verify=verify, apply=apply, scope_verify=getattr(args, "fast", False),
         min_move_value=_min_move_value(args),
+        manifesto_aware=getattr(args, "manifesto_aware", False),
     )
     if args.json:
         print(json.dumps(result.to_dict(), indent=2))
@@ -1752,12 +1754,34 @@ def _develop_goals_dispatch(args, target, max_steps, verify, apply) -> int | Non
     neither flag applies, so ``cmd_develop`` falls through to its other
     dispatch paths unchanged."""
     if getattr(args, "goals", "") and getattr(args, "fixpoint", False):
+        _warn_manifesto_unsupported(args, "--goals --fixpoint")
         return _develop_fixpoint(args, target, max_steps, verify, apply)
     if getattr(args, "goals", ""):
         print("⛔ --goals requires --fixpoint (a goal SET only runs through the "
              "round-based convergence loop)", file=sys.stderr)
         return 2
     return None
+
+
+def _warn_manifesto_unsupported(args: argparse.Namespace, mode: str) -> None:
+    """``--manifesto`` HARD-ENFORCEs learned laws only through
+    ``compile_objective``'s manifesto gate (:func:`_arm_manifesto_skip` /
+    :func:`_manifesto_fragile_fired` in ``objective_compiler.py``) — reached
+    TODAY by just the default single-objective campaign and ``--auto``. Every
+    other ``develop`` mode (``session``, ``--chain``, ``--goals --fixpoint``,
+    ``--goal[ --atomic]``, ``--all``, ``--multifile``, ``--from-dream``) routes
+    through a DIFFERENT engine (``run_develop_session``, ``run_chain``,
+    ``run_goal_fixpoint``, ``compile_goal``/``orchestrate_goal``, ``compile_all``,
+    ``run_moves``, ``compile_from_dream``) that does not (yet) accept
+    ``manifesto_aware``, so the flag would otherwise be silently dropped — a
+    governance flag the user trusted, ignored with no sign of it. Warn honestly
+    on stderr, naming the mode that ignored it, instead of pretending to
+    enforce. A no-op when ``--manifesto`` was not passed."""
+    if getattr(args, "manifesto_aware", False):
+        print(f"⚠️  --manifesto is not wired into `develop {mode}` — it "
+              "HARD-ENFORCES manifesto laws only for the default single-"
+              "objective campaign and --auto. No law was skipped or demoted "
+              "this run.", file=sys.stderr)
 
 
 def cmd_develop(args: argparse.Namespace) -> int:
@@ -1788,6 +1812,7 @@ def cmd_develop(args: argparse.Namespace) -> int:
     # default so the bare-`session` word isn't mistaken for an objective name.
     if (getattr(args, "session", False)
             or getattr(args, "mode_word", "") == "session"):
+        _warn_manifesto_unsupported(args, "session")
         return _develop_session(args, target, max_steps, verify, apply)
 
     # `apex develop --chain a,b,c`: an EXPLICIT ordered objective SEQUENCE via the
@@ -1795,6 +1820,7 @@ def cmd_develop(args: argparse.Namespace) -> int:
     # its own objectives) and before the single-objective default. Off unless the
     # flag carries a value, so a bare develop is unaffected.
     if getattr(args, "chain", "") or "":
+        _warn_manifesto_unsupported(args, "--chain")
         return _develop_chain(args, target, max_steps, verify, apply)
 
     # `apex develop --goals A,B,C --fixpoint`: a whole GOAL-SET convergence loop.
@@ -1829,16 +1855,20 @@ def _develop_campaign_dispatch(args, target, objective, grade_before,
     is byte-identical to before."""
     goal = getattr(args, "goal", "") or ""
     if goal:
+        _warn_manifesto_unsupported(args, "--goal")
         if getattr(args, "atomic", False):
             return _develop_goal_atomic(args, target, goal, verify, apply)
         return _develop_goal(args, target, goal, max_steps, verify, apply)
     if getattr(args, "auto", False):
         return _develop_auto(args, target, grade_before, max_steps, verify, apply)
     if getattr(args, "all_objectives", False):
+        _warn_manifesto_unsupported(args, "--all")
         return _develop_all(args, target, grade_before, max_steps, verify, apply)
     if getattr(args, "multifile", False):
+        _warn_manifesto_unsupported(args, "--multifile")
         return _develop_multifile(args, target, max_steps, verify, apply)
     if getattr(args, "from_dream", False):
+        _warn_manifesto_unsupported(args, "--from-dream")
         return _develop_from_dream(args, target, objective, max_steps, verify, apply)
     return _develop_objective(args, target, objective, grade_before,
                               max_steps, verify, apply)
@@ -2523,6 +2553,14 @@ def register_parsers(subparsers) -> None:
         "--risk-aware", action="store_true", dest="risk_aware",
         help="Order moves by LEARNED rollback risk (proof history) — try the "
              "low-risk ones first, like the maintain path; no-op without history")
+    develop_parser.add_argument(
+        "--manifesto", action="store_true", dest="manifesto_aware",
+        help="HARD-ENFORCE `apex manifesto`'s learned laws in the default "
+             "single-objective campaign and --auto ONLY: skip a move an AVOID "
+             "law flags (naming the law), demote a move a FRAGILE law flags "
+             "(never dropped); no-op (silent) with no manifesto laws, no-op "
+             "WITH A WARNING when combined with session/--chain/--goal/--all/"
+             "--multifile/--from-dream/--goals --fixpoint (not yet wired there)")
     develop_parser.add_argument(
         "--session", action="store_true",
         help="Run the combined concrete-objective session (same as the `session` "

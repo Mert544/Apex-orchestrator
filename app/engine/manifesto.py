@@ -44,6 +44,8 @@ _MIN_MODULE_ATTEMPTS = 3
 __all__ = [
     "derive_manifesto",
     "render_manifesto_markdown",
+    "avoid_law_signatures",
+    "fragile_law_modules",
 ]
 
 
@@ -141,3 +143,61 @@ def render_manifesto_markdown(manifesto: dict) -> str:
         "## 🧠 PROVEN idioms (native lane lands these)", idioms,
         lambda r: f"`{_shape_label(r['shape'])}` — score {r['score']:g}")
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _flagged_signatures_sorted(history: list[dict]) -> list[tuple[str, dict]]:
+    """The avoid-flagged ``(signature, stats)`` pairs from ``failure_signatures``,
+    ordered EXACTLY the way ``near_miss_insights`` orders them (worst first: rate,
+    then attempts, then signature name) — re-derived rather than shared, since this
+    module never imports past the two learners it already depends on."""
+    from app.engine.counterfactual_learning import failure_signatures
+
+    signatures = failure_signatures(history)
+    flagged = [(key, stats) for key, stats in signatures.items() if stats.get("avoid")]
+    flagged.sort(key=lambda item: (-item[1]["failure_rate"], -item[1]["attempts"], item[0]))
+    return flagged
+
+
+def avoid_law_signatures(root: str | Path) -> dict[str, str]:
+    """Map each ``"action | trait"`` signature to the VERBATIM AVOID line
+    :func:`derive_manifesto` renders for it — the bridge that lets an enforcement
+    gate skip a move by EXACTLY the law text a human sees in ``apex manifesto``.
+
+    Rebuilds the same flagged/ordered set :func:`app.engine.counterfactual_learning
+    .near_miss_insights` derives (see :func:`_flagged_signatures_sorted`), then
+    zips it positionally against ``near_miss_insights(history)``'s own output,
+    capped to the number of rendered lines. FAIL-CLOSED: returns ``{}`` on empty
+    history, if the reconstructed count ever mismatches the rendered line count
+    (a future drift in either learner's ordering must never mis-attribute a law
+    to the wrong signature), or on any exception — never raises."""
+    try:
+        from app.engine.counterfactual_learning import near_miss_insights
+        from app.engine.proof_history import load_proof_history
+
+        history = load_proof_history(root)
+        lines = near_miss_insights(history)
+        if not lines:
+            return {}
+        flagged = _flagged_signatures_sorted(history)[: len(lines)]
+        if len(flagged) != len(lines):
+            return {}  # ordering drifted between the two learners — refuse to guess
+        return {key: line for (key, _stats), line in zip(flagged, lines)}
+    except Exception:
+        return {}
+
+
+def fragile_law_modules(root: str | Path) -> dict[str, str]:
+    """Map each FRAGILE module to the VERBATIM bullet text
+    :func:`render_manifesto_markdown` renders for it (same string, without the
+    leading ``"- "``), so an enforcement gate can demote a move by EXACTLY the law
+    a human sees in ``apex manifesto``. ``{}`` on no fragile laws or any error;
+    never raises."""
+    try:
+        fragile = derive_manifesto(root).get("fragile") or []
+        return {
+            r["module"]: f"`{r['module']}` — {r['rollbacks']}/{r['total']} rolled "
+                          f"back (reliability {r['reliability']:g})"
+            for r in fragile
+        }
+    except Exception:
+        return {}

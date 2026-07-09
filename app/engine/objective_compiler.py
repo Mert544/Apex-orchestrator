@@ -213,6 +213,18 @@ class CompileResult:
     # on a later pass). Empty for every run that did not arm ``avoid_aware`` (the
     # default), so ``to_dict()`` stays byte-identical (mirrors ``withheld``).
     avoided: list[str] = field(default_factory=list)
+    # MANIFESTO-ENFORCED (opt-in, ``manifesto_aware``): the verbatim law line(s)
+    # from `apex manifesto` that FIRED this campaign — an AVOID law that caused a
+    # skip (see ``avoided`` above, whose reason also names the law) and/or a
+    # FRAGILE law that ACTUALLY demoted a matching move's order — never merely
+    # a flagged module being present (see ``_manifesto_fragile_fired``). Reads
+    # the CURATED, thresholded manifesto laws (not the raw counterfactual/risk
+    # signal directly), so what fires here
+    # is EXACTLY what a human sees in ``apex manifesto`` — no hidden divergence
+    # between the disclosed law and the applied gate. Deduplicated, in the order
+    # first fired. Empty for every run that did not arm ``manifesto_aware`` (the
+    # default), so ``to_dict()`` stays byte-identical (mirrors ``avoided``).
+    manifesto_laws: list[str] = field(default_factory=list)
     # END-OF-CAMPAIGN regression-BACKSTOP verdict (see the ``BACKSTOP_*``
     # constants). A STANDALONE gated apply (``apply and verify`` with NO
     # caller-supplied ``baseline_failing`` — the develop session supplies one and
@@ -254,6 +266,11 @@ class CompileResult:
         # never armed it is byte-identical (mirrors ``withheld``).
         if self.avoided:
             d["avoided"] = list(self.avoided)
+        # Purely ADDITIVE: appears only when the manifesto-aware gate actually
+        # fired a law this campaign (see ``manifesto_laws`` docstring above), so a
+        # campaign that never armed it is byte-identical (mirrors ``avoided``).
+        if self.manifesto_laws:
+            d["manifesto_laws"] = list(self.manifesto_laws)
         # Purely ADDITIVE: appears only when a caller actually committed the
         # result (see ``committed``/``commit_hash`` docstring above).
         if self.committed:
@@ -1116,37 +1133,134 @@ def _avoid_flagged_targets(moves: list[Move], root: str | Path) -> set[str]:
         return set()
 
 
-def _initial_skip_targets(covered_only: bool, avoid_aware: bool) -> set | None:
+def _manifesto_avoid_targets(moves: list[Move], root: str) -> dict[str, str]:
+    """The target -> verbatim AVOID-law line for every move whose ``(operator,
+    module-trait)`` signature a manifesto AVOID law flags.
+
+    Mirrors :func:`_avoid_flagged_targets`'s shape but reads the CURATED,
+    thresholded manifesto laws (:func:`app.engine.manifesto.avoid_law_signatures`)
+    rather than the raw counterfactual signal directly — since manifesto laws
+    derive from that SAME underlying store, what fires here is EXACTLY the law
+    text `apex manifesto` displays, never a hidden divergence. Best-effort: any
+    failure (the loader already fails closed to ``{}``) yields no targets."""
+    from app.engine.counterfactual_learning import module_traits
+    from app.engine.manifesto import avoid_law_signatures
+
+    laws = avoid_law_signatures(root)
+    if not laws:
+        return {}
+    out: dict[str, str] = {}
+    for mv in moves:
+        for trait in sorted(module_traits(_move_module(mv))):
+            key = f"{mv.operator} | {trait}"
+            if key in laws:
+                out[mv.target] = laws[key]
+                break
+    return out
+
+
+def _manifesto_fragile_demoted(moves: list[Move], root: str) -> list[Move]:
+    """Stable-demote every move whose module a manifesto FRAGILE law flags —
+    NEVER dropped, only ordered AFTER every non-fragile move (mirrors
+    :func:`_risk_ordered`'s never-drop, best-effort contract). A move whose
+    module carries no fragile law keeps its relative position (Python's
+    ``sorted`` is stable, and equal-value-tie moves keep their prior order too).
+    No-op (returns ``moves`` unchanged) when there are no fragile laws."""
+    from app.engine.manifesto import fragile_law_modules
+
+    fragile = fragile_law_modules(root)
+    if not fragile:
+        return moves
+    return sorted(moves, key=lambda m: _move_module(m) in fragile)
+
+
+def _manifesto_fragile_fired(pre: list[Move], post: list[Move], root: str) -> list[str]:
+    """The verbatim FRAGILE law line(s) that ACTUALLY fired — i.e. whose
+    demotion changed ``pre`` into ``post`` this pass — never merely "a
+    flagged module was present" (that over-claims governance: a single-move
+    pass, or a fragile move that was already trailing, changes nothing).
+
+    Identity-compares ``pre``/``post`` position-by-position (the SAME Move
+    objects, just possibly reordered by :func:`_manifesto_fragile_demoted`'s
+    stable sort) rather than trusting membership alone, so a no-op demotion
+    is honestly reported as having fired NO law. Best-effort: any loader
+    failure (``fragile_law_modules`` already fails closed) yields ``[]``."""
+    if len(pre) == len(post) and all(a is b for a, b in zip(pre, post)):
+        return []
+    from app.engine.manifesto import fragile_law_modules
+
+    fragile = fragile_law_modules(root)
+    if not fragile:
+        return []
+    touched = {_move_module(mv) for mv in post} & fragile.keys()
+    return [fragile[module] for module in sorted(touched)]
+
+
+def _initial_skip_targets(covered_only: bool, avoid_aware: bool,
+                          manifesto_aware: bool = False) -> set | None:
     """The campaign's initial ``skip_targets`` channel (see ``_apply_one_move``):
-    an empty, armed set when EITHER the covered-only sweep or the avoid-aware
-    guard needs it, else ``None`` — the historical no-op that keeps the skip
-    check inert, so a plain campaign's apply loop stays byte-identical."""
-    return set() if (covered_only or avoid_aware) else None
+    an empty, armed set when the covered-only sweep, the avoid-aware guard, OR
+    the manifesto-aware gate needs it, else ``None`` — the historical no-op that
+    keeps the skip check inert, so a plain campaign's apply loop stays
+    byte-identical."""
+    return set() if (covered_only or avoid_aware or manifesto_aware) else None
+
+
+def _arm_manifesto_skip(result: CompileResult, skip_targets: set,
+                        moves: list[Move], root: str) -> None:
+    """OPT-IN (``manifesto_aware``): skip AVOID-law-flagged targets via the SAME
+    ``skip_targets`` channel, disclosing the verbatim law text in the skip
+    reason, and record every AVOID law that fired THIS pass onto
+    ``result.manifesto_laws`` (deduplicated), so the constitution is visibly
+    governing, not just read-only prose.
+
+    FRAGILE laws are NOT recorded here: a fragile-flagged module merely being
+    present in ``moves`` does not mean the demotion pass actually reordered
+    anything (a single-move pass, or a fragile move already trailing, is a
+    no-op). That disclosure instead happens in :func:`_ordered_candidates`,
+    right where pre- and post-demotion order can be compared — see
+    :func:`_manifesto_fragile_fired`."""
+    avoid_targets = _manifesto_avoid_targets(moves, root)
+    new = {t: line for t, line in avoid_targets.items() if t not in skip_targets}
+    for target in sorted(new):
+        line = new[target]
+        result.avoided.append(f"{target}: skipped — manifesto law: {line}")
+        if line not in result.manifesto_laws:
+            result.manifesto_laws.append(line)
+    skip_targets.update(new)
 
 
 def _arm_avoid_skip(result: CompileResult, skip_targets: set | None,
-                    moves: list[Move], root: str, avoid_aware: bool) -> None:
-    """OPT-IN (``avoid_aware``): pre-populate ``skip_targets`` with this pass's
-    avoid-flagged move targets, so ``_apply_one_move``'s EXISTING skip check
-    (untouched — see its ``skip_targets`` gate) declines them before ever
-    building a plan or touching the suite. Reuses the covered-only skip channel
-    rather than adding a parallel one.
+                    moves: list[Move], root: str, avoid_aware: bool,
+                    manifesto_aware: bool = False) -> None:
+    """OPT-IN (``avoid_aware`` / ``manifesto_aware``): pre-populate ``skip_targets``
+    with this pass's avoid-flagged move targets, so ``_apply_one_move``'s EXISTING
+    skip check (untouched — see its ``skip_targets`` gate) declines them before
+    ever building a plan or touching the suite. Reuses the covered-only skip
+    channel rather than adding a parallel one.
 
     Each NEWLY-flagged target is recorded once on ``result.avoided`` (a target
-    already in ``skip_targets`` from an earlier pass — avoid-flagged or
-    covered-only-withheld — is never re-announced), mirroring how a covered-only
-    withhold is reported once then silently re-skipped.
+    already in ``skip_targets`` from an earlier pass — avoid-flagged, manifesto-
+    flagged, or covered-only-withheld — is never re-announced), mirroring how a
+    covered-only withhold is reported once then silently re-skipped.
 
-    No-op when ``avoid_aware`` is off (the default) or ``skip_targets`` is
-    ``None`` (unarmed), so a default campaign is byte-identical."""
-    if not avoid_aware or skip_targets is None:
+    ``manifesto_aware`` additionally arms the manifesto-law skip/demotion
+    disclosure (see :func:`_arm_manifesto_skip`) — independent of ``avoid_aware``,
+    so either flag (or both) can be on.
+
+    No-op when ``skip_targets`` is ``None`` (unarmed) or both flags are off (the
+    default), so a default campaign is byte-identical."""
+    if skip_targets is None:
         return
-    new = _avoid_flagged_targets(moves, root) - skip_targets
-    for target in sorted(new):
-        result.avoided.append(
-            f"{target}: skipped — learned-avoid (proof-of-fix history predicts "
-            f"rollback)")
-    skip_targets.update(new)
+    if avoid_aware:
+        new = _avoid_flagged_targets(moves, root) - skip_targets
+        for target in sorted(new):
+            result.avoided.append(
+                f"{target}: skipped — learned-avoid (proof-of-fix history predicts "
+                f"rollback)")
+        skip_targets.update(new)
+    if manifesto_aware:
+        _arm_manifesto_skip(result, skip_targets, moves, root)
 
 
 def _ordered_candidates(generate: Callable[[str | Path], list[Move]], root: str,
@@ -1155,7 +1269,9 @@ def _ordered_candidates(generate: Callable[[str | Path], list[Move]], root: str,
                         centrality: dict[str, int] | None = None,
                         realization: dict[str, float] | None = None,
                         js_centrality: dict[str, int] | None = None,
-                        risk_aware: bool = False) -> list[Move]:
+                        risk_aware: bool = False,
+                        manifesto_aware: bool = False,
+                        result: CompileResult | None = None) -> list[Move]:
     """The candidate moves for one scan, scoped and ordered.
 
     Generates the objective's moves against the CURRENT tree, confines them to
@@ -1199,7 +1315,19 @@ def _ordered_candidates(generate: Callable[[str | Path], list[Move]], root: str,
     Python-``ast``-only ``centrality`` graph and would otherwise silently tiebreak
     as fan-in 0 (see :func:`_move_centrality`). ``None`` (the default, and the only
     state on a Python-only or non-value-aware project) leaves the slot exactly as
-    it was: a JS move's blast radius reads 0, same as before this signal existed."""
+    it was: a JS move's blast radius reads 0, same as before this signal existed.
+
+    ``manifesto_aware`` (opt-in) applies a FINAL stable demotion pass after
+    ``risk_aware``: any move whose module a manifesto FRAGILE law flags is
+    reordered after every non-flagged move (see :func:`_manifesto_fragile_demoted`)
+    — never dropped. Off by default, so every existing campaign's order is
+    unaffected. When a caller threads its live ``result`` (the develop-loop
+    apply path only — a dry-run/measurement call passes ``None``), any law
+    whose demotion ACTUALLY changed the order this scan is recorded onto
+    ``result.manifesto_laws`` (see :func:`_manifesto_fragile_fired`) — never
+    merely because a flagged module was present, which would over-claim
+    governance on a no-op demotion (a single-move scan, or a fragile move
+    that was already trailing)."""
     from app.engine.move_value import scored_move_value
 
     moves = generate(root)
@@ -1221,6 +1349,13 @@ def _ordered_candidates(generate: Callable[[str | Path], list[Move]], root: str,
         # value/sequence order above breaks ties. Opt-in and a no-op without proof
         # history, so a default campaign stays byte-identical.
         moves = _risk_ordered(moves, root)
+    if manifesto_aware:
+        demoted = _manifesto_fragile_demoted(moves, root)
+        if result is not None:
+            for law in _manifesto_fragile_fired(moves, demoted, root):
+                if law not in result.manifesto_laws:
+                    result.manifesto_laws.append(law)
+        moves = demoted
     return moves
 
 
@@ -1351,6 +1486,7 @@ def _run_pass(result: CompileResult, moves: list[Move], root: str, current: floa
               baseline_failing: frozenset[str] | None = None,
               realization: dict[str, float] | None = None,
               avoid_aware: bool = False,
+              manifesto_aware: bool = False,
               ) -> tuple[bool, float, str]:
     """Apply every move in one pass's scan that still lands, in order.
 
@@ -1380,8 +1516,16 @@ def _run_pass(result: CompileResult, moves: list[Move], root: str, current: floa
     AVOID-AWARE (opt-in): before this pass's moves are attempted, arms
     ``skip_targets`` with any move the counterfactual avoid-guard flags (see
     :func:`_arm_avoid_skip`) — the develop-loop sibling of the maintain path's
-    closed loop. Default off ⇒ byte-identical to today."""
-    _arm_avoid_skip(result, skip_targets, moves, root, avoid_aware)
+    closed loop. Default off ⇒ byte-identical to today.
+
+    MANIFESTO-AWARE (opt-in): the SAME pre-pass arming also skips any move a
+    manifesto AVOID law flags (disclosing the verbatim law text) and records
+    every AVOID law that fired this pass onto ``result.manifesto_laws`` (see
+    :func:`_arm_manifesto_skip`; a FRAGILE law's firing is recorded separately,
+    by :func:`_ordered_candidates`, at the point it can tell whether its
+    demotion actually reordered anything). Default off ⇒ byte-identical to
+    today."""
+    _arm_avoid_skip(result, skip_targets, moves, root, avoid_aware, manifesto_aware)
     progressed = False
     for mv in moves:
         if len(result.steps) >= max_steps:
@@ -1659,6 +1803,7 @@ def compile_objective(project_root: str | Path, objective: str = "dead-params",
                       baseline_failing: frozenset[str] | None = None,
                       risk_aware: bool = False,
                       avoid_aware: bool = False,
+                      manifesto_aware: bool = False,
                       ) -> CompileResult:
     """Greedily compose verified moves toward ``objective``.
 
@@ -1714,6 +1859,19 @@ def compile_objective(project_root: str | Path, objective: str = "dead-params",
     safer order, while avoid-aware refuses the ones with strong rollback
     evidence outright. An empty/missing proof history flags nothing, so a fresh
     project's campaign is unaffected even with the guard armed.
+
+    ``manifesto_aware`` (DEFAULT False = byte-identical to today) is the OPT-IN
+    HARD-ENFORCEMENT of ``apex manifesto``'s constitution — the same avoid-skip
+    and risk-demote channels above, now driven by the CURATED, thresholded law
+    text (:mod:`app.engine.manifesto`) rather than the raw signal directly, so
+    what a human reads in the manifesto is EXACTLY what governs a campaign: (1)
+    a move whose ``(operator, module-trait)`` an AVOID law flags is skipped
+    (never plan-built), naming the law verbatim in the disclosed reason; (2) a
+    move whose module a FRAGILE law flags is demoted — reordered after every
+    non-flagged move, never dropped; (3) every law that fired is recorded on
+    ``result.manifesto_laws``. Composes with ``avoid_aware``/``risk_aware``
+    freely (independent flags). No ``.apex`` history, or no laws cleared the
+    manifesto's thresholds, ⇒ nothing fires ⇒ byte-identical even when armed.
 
     END-OF-CAMPAIGN REGRESSION BACKSTOP: a STANDALONE gated apply (``apply and
     verify`` with no caller-supplied ``baseline_failing``) re-runs the suite
@@ -1772,10 +1930,16 @@ def compile_objective(project_root: str | Path, objective: str = "dead-params",
     move_centrality, js_centrality, realization = _value_aware_signals(
         root, value_aware)
 
-    def candidates() -> list[Move]:
+    def candidates(track: CompileResult | None = None) -> list[Move]:
+        # ``track`` is the live ``result`` to record ACTUAL manifesto-fragile
+        # firings onto (see ``_ordered_candidates``). Only the real apply-pass
+        # scan below passes it — the pre-``result`` measurement call and the
+        # dry-run listing stay untracked, exactly as ``_arm_manifesto_skip``'s
+        # AVOID disclosure was already scoped to the apply loop only.
         return _ordered_candidates(generate, root, scope_module, memory,
                                    last_operator, value_aware, move_centrality,
-                                   realization, js_centrality, risk_aware)
+                                   realization, js_centrality, risk_aware,
+                                   manifesto_aware, track)
 
     def measure() -> float:
         # Scoped runs measure the local debt (remaining scoped moves); a global
@@ -1813,17 +1977,19 @@ def compile_objective(project_root: str | Path, objective: str = "dead-params",
     # avoid-flagged move targets, so a candidate that re-surfaces every pass is
     # skipped (not re-run/double-counted or re-announced). None when BOTH gates
     # are off ⇒ the apply loop is byte-identical (see ``_initial_skip_targets``).
-    skip_targets: set | None = _initial_skip_targets(covered_only, avoid_aware)
+    skip_targets: set | None = _initial_skip_targets(
+        covered_only, avoid_aware, manifesto_aware)
     for _pass in range(max_steps + 1):
         if len(result.steps) >= max_steps:
             break
-        moves = candidates()  # one scan per pass
+        moves = candidates(result)  # one scan per pass
         if not moves:
             break
         progressed, current, last_operator = _run_pass(
             result, moves, root, current, max_steps, verify, effective_scope,
             last_operator, memory, value_aware, min_move_value, covered_only,
-            skip_targets, campaign_baseline, realization, avoid_aware)
+            skip_targets, campaign_baseline, realization, avoid_aware,
+            manifesto_aware)
         if not progressed:
             break
 
@@ -2085,6 +2251,14 @@ def render_compile_markdown(result: CompileResult) -> str:
         lines.append("## Blocked")
         for b in result.blocked[:10]:
             lines.append(f"- ⛔ {b}")
+    if result.manifesto_laws:
+        # Discloses WHICH laws fired this run, so the constitution `apex
+        # manifesto` shows is visibly governing this campaign — never a silent
+        # skip/demote (see ``manifesto_aware`` on ``compile_objective``).
+        lines.append("")
+        lines.append("## Manifesto laws fired")
+        for law in result.manifesto_laws:
+            lines.append(f"- {law}")
     lines.append("")
     return "\n".join(lines)
 
