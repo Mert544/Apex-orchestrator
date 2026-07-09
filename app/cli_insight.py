@@ -574,10 +574,25 @@ def cmd_readiness(args: argparse.Namespace) -> int:
 
 def cmd_fixrisk(args: argparse.Namespace) -> int:
     """Learned fix-risk: how likely a planned fix is to roll back, from Apex's
-    own proof history + counterfactual learning (deterministic, read-only)."""
+    own proof history + counterfactual learning (deterministic, read-only).
+
+    With ``--explain`` (requires ``--action`` and ``--module``), prints a
+    per-signal risk breakdown for ONE candidate instead of the aggregate
+    report — see :func:`app.engine.fix_risk_model.render_fix_risk_explanation`."""
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    if getattr(args, "explain", False):
+        action = getattr(args, "action", "") or ""
+        module = getattr(args, "module", "") or ""
+        if not action or not module:
+            print("fix-risk --explain requires --action and --module")
+            return 2
+        from app.engine.fix_risk_model import render_fix_risk_explanation
+
+        print(render_fix_risk_explanation(action, module, str(target)))
+        return 0
+
     from app.engine.fix_risk_model import render_fix_risk_markdown
 
-    target = Path(args.target).resolve() if args.target else _get_project_root()
     print(render_fix_risk_markdown(str(target)))
     return 0
 
@@ -1969,6 +1984,12 @@ def register_parsers(subparsers) -> None:
         help="Learned fix-risk: rollback likelihood of planned fixes from proof history",
     )
     fixrisk_parser.add_argument("--target", default="", help="Target project root")
+    fixrisk_parser.add_argument("--explain", action="store_true",
+                                help="Per-signal risk breakdown for one --action/--module candidate")
+    fixrisk_parser.add_argument("--action", default="",
+                                help="Action type to explain (with --explain)")
+    fixrisk_parser.add_argument("--module", default="",
+                                help="Module/target to explain, relative to the project root (with --explain)")
     fixrisk_parser.set_defaults(func=cmd_fixrisk)
 
     # discoveries — ranked leads fused from the anomaly/temporal/rule engines

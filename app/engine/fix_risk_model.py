@@ -83,6 +83,10 @@ from app.engine.counterfactual_learning import (
 )
 from app.engine.native_proof_memory import decayed_reliability
 from app.engine.proof_history import (
+    _DECAY as _PROOF_DECAY,
+    _iter_fixes,
+    _module_of,
+    _outcome_of,
     learned_reliability,
     learned_reliability_decayed,
     load_proof_history,
@@ -144,12 +148,24 @@ def _reliability_risk(reliabilities: dict[str, float], action_type: str) -> floa
     return _clamp(1.0 - float(score))
 
 
-def _track_risk(summary: dict, action_type: str, module: str) -> float:
+def _track_risk(
+    summary: dict,
+    action_type: str,
+    module: str,
+    decayed: dict[str, float] | None = None,
+) -> float:
     """Risk from the (action, module) track record, in ``[0, 1]``.
 
-    Prefers a module-specific landing ratio when the proof history has acted on
-    that module before, else the action's ratio, else abstains at the baseline.
-    Contribution is ``1 - ratio`` so a high-landing key reads as low risk."""
+    When a non-empty ``decayed`` module-fragility map is supplied (the
+    ``recency=True`` opt-in — see :func:`_module_fragility_decayed`) AND it
+    has an entry for ``module``, that RANK-DECAYED risk ratio is used
+    directly (it is already risk-shaped, so no ``1 - ratio`` flip). Otherwise
+    falls back to the historical equal-weight path: prefers a module-specific
+    landing ratio when the proof history has acted on that module before,
+    else the action's ratio, else abstains at the baseline. ``decayed=None``
+    (the default) is byte-identical to the pre-recency behaviour."""
+    if decayed and module in decayed:
+        return _clamp(decayed[module])
     by_module = summary.get("by_module") or {}
     by_action = summary.get("by_action") or {}
     entry = by_module.get(module)
@@ -159,6 +175,47 @@ def _track_risk(summary: dict, action_type: str, module: str) -> float:
         return _BASELINE
     ratio = float(entry.get("reliability") or 0.0)
     return _clamp(1.0 - ratio)
+
+
+def _module_fragility_decayed(history: list[dict]) -> dict[str, float]:
+    """Recency-weighted MODULE fragility — generational forgetting for the
+    track-record signal, in ``[0, 1]`` per module.
+
+    Mirrors :func:`app.engine.proof_history.learned_reliability_decayed`
+    (same rank-based ``_PROOF_DECAY ** (n-1-i)`` weighting, the SAME
+    ``0.85`` constant, read read-only from ``proof_history``) but keyed by
+    MODULE (:func:`app.engine.proof_history._module_of`) instead of action,
+    and shaped as a RISK ratio (``not_applied / total``) rather than a
+    reliability ratio, so it plugs directly into :func:`_track_risk`'s scale
+    without a ``1 - ratio`` flip.
+
+    Proofs are ordered oldest→newest by the loader's existing deterministic
+    key; generation ``i`` (``0`` = oldest of ``n``) gets weight
+    ``_PROOF_DECAY ** (n-1-i)``, so the newest generation weighs ``1.0`` and
+    older ones decay geometrically. A module that used to roll back often but
+    has landed cleanly in the most recent generations is no longer punished
+    forever by ancient failures — the same "çağ atlatma" leap
+    ``learned_reliability_decayed`` gives actions.
+
+    Pure rank arithmetic — no wall-clock, no randomness, so identical proof
+    content yields an identical mapping. Empty/missing history → ``{}``;
+    never raises (mirrors every other reducer in this module)."""
+    proofs = history or []
+    n = len(proofs)
+    not_applied: dict[str, float] = {}
+    total: dict[str, float] = {}
+    for i, proof in enumerate(proofs):
+        weight = _PROOF_DECAY ** (n - 1 - i)
+        for fix in _iter_fixes([proof]):
+            module = _module_of(fix)
+            total[module] = total.get(module, 0.0) + weight
+            if _outcome_of(fix) != "applied":
+                not_applied[module] = not_applied.get(module, 0.0) + weight
+    return {
+        module: round(not_applied.get(module, 0.0) / total[module], _PRECISION)
+        for module in sorted(total)
+        if total[module] > 0
+    }
 
 
 def _avoid_risk(signatures: dict[str, dict[str, Any]], action_type: str, module: str) -> float:
@@ -224,6 +281,7 @@ def _score(
     action_type: str,
     module: str,
     root: str | Path = ".",
+    decayed_fragility: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     """Fuse the signals for one (action, module) into a scored evidence dict.
 
@@ -233,9 +291,14 @@ def _score(
     average (at ``_W_*`` weights) only when it is ACTIVE; otherwise the fusion
     uses the historical ``_W_*_NO_EXPERIENCE`` weights, which is exactly the
     3-signal formula this module used before the 4th signal existed — so an
-    inactive experience signal is byte-identical to the old score."""
+    inactive experience signal is byte-identical to the old score.
+
+    ``decayed_fragility`` (default ``None``) is threaded straight into
+    :func:`_track_risk` — see that function for how it swaps in the
+    rank-decayed module-fragility ratio. ``None`` (or an empty map) keeps the
+    track signal byte-identical to the pre-recency behaviour."""
     reliability = _reliability_risk(reliabilities, action_type)
-    track = _track_risk(summary, action_type, module)
+    track = _track_risk(summary, action_type, module, decayed_fragility)
     avoid = _avoid_risk(signatures, action_type, module)
     experience, active = _experience_risk(root, action_type)
     if active:
@@ -288,11 +351,14 @@ def fix_risk(
 
     ``recency`` is an OPT-IN switch (default ``False``) that swaps the flat
     lifetime reliability signal for the rank-decayed
-    :func:`learned_reliability_decayed`, so a fix family that stopped rolling
-    back several runs ago is no longer dragged down by ancient failures. When
-    ``False`` the score is byte-identical to the historical behaviour; the
-    other signals (track record, avoid-guard, native experience) are
-    unchanged in both modes."""
+    :func:`learned_reliability_decayed`, AND swaps the flat module track-record
+    ratio for the rank-decayed :func:`_module_fragility_decayed`, so a fix
+    family (and a module) that stopped rolling back several runs ago is no
+    longer dragged down by ancient failures. When ``False`` the score is
+    byte-identical to the historical behaviour; the other signals (avoid-guard,
+    native experience) are unchanged in both modes. With an empty proof
+    history ``recency=True`` and ``recency=False`` score identically (both
+    signals abstain to the neutral baseline)."""
     history = load_proof_history(root)
     reliabilities = (
         learned_reliability_decayed(history)
@@ -301,27 +367,37 @@ def fix_risk(
     )
     summary = summarise_fix_track_record(history)
     signatures = failure_signatures(history)
+    decayed_fragility = _module_fragility_decayed(history) if recency else None
     return _score(
-        reliabilities, summary, signatures, str(action_type), str(module), root
+        reliabilities, summary, signatures, str(action_type), str(module), root,
+        decayed_fragility,
     )["risk"]
 
 
 def rank_fix_risks(
-    root: str | Path, candidates: list[tuple[str, str]]
+    root: str | Path, candidates: list[tuple[str, str]], recency: bool = False
 ) -> list[dict]:
     """Score each ``(action_type, module)`` candidate and rank riskiest first.
 
     Returns one evidence dict per candidate (see :func:`_score`), sorted
     deterministically by descending ``risk`` then by the ``(action_type,
     module)`` key so ties are stable. The proof history is read ONCE and reused
-    across candidates. An empty candidate list → ``[]``; never raises."""
+    across candidates. ``recency`` is the same OPT-IN decay switch
+    :func:`fix_risk` documents (default ``False`` — byte-identical to the
+    historical behaviour); an empty candidate list → ``[]``; never raises."""
     history = load_proof_history(root)
-    reliabilities = learned_reliability(history)
+    reliabilities = (
+        learned_reliability_decayed(history)
+        if recency
+        else learned_reliability(history)
+    )
     summary = summarise_fix_track_record(history)
     signatures = failure_signatures(history)
+    decayed_fragility = _module_fragility_decayed(history) if recency else None
     scored = [
         _score(
-            reliabilities, summary, signatures, str(action), str(module), root
+            reliabilities, summary, signatures, str(action), str(module), root,
+            decayed_fragility,
         )
         for action, module in (candidates or [])
     ]
@@ -425,3 +501,168 @@ def render_fix_risk_markdown(root: str | Path) -> str:
         lines.append("_None — no signature clears the avoid threshold._")
 
     return "\n".join(lines).rstrip() + "\n"
+
+
+# --------------------------------------------------------------------------- #
+# explain_fix_risk — a deterministic, human-readable per-signal breakdown of
+# ONE (action, module) score, so a reviewer can see WHY a fix was flagged
+# risky instead of just the final number. Read-only: it calls the exact same
+# `_score` fusion `fix_risk`/`rank_fix_risks` use, so the breakdown can never
+# drift from the returned score (never-fake-green discipline applies to
+# explanations too).
+# --------------------------------------------------------------------------- #
+
+# Fixed emission order for the per-signal breakdown — matches the `evidence`
+# names `_score` already emits, so `active` is a direct membership check.
+_SIGNAL_ORDER = ("reliability", "track_record", "counterfactual_avoid", "native_experience")
+
+
+def _explain_weights(active_experience: bool) -> dict[str, float]:
+    """The ACTUAL weight each signal carries in the fusion `_score` just ran.
+
+    Mirrors the same active/inactive weight-set choice `_score` makes: when
+    the experience signal is active the 4-weight (`_W_*`) set applies; when it
+    is not, the 3-weight (`_W_*_NO_EXPERIENCE`) set applies and the experience
+    signal's weight is exactly ``0.0`` (it plays no part in the sum)."""
+    if active_experience:
+        return {
+            "reliability": _W_RELIABILITY,
+            "track_record": _W_TRACK,
+            "counterfactual_avoid": _W_AVOID,
+            "native_experience": _W_EXPERIENCE,
+        }
+    return {
+        "reliability": _W_RELIABILITY_NO_EXPERIENCE,
+        "track_record": _W_TRACK_NO_EXPERIENCE,
+        "counterfactual_avoid": _W_AVOID_NO_EXPERIENCE,
+        "native_experience": 0.0,
+    }
+
+
+def _explain_values(scored: dict[str, Any], active_experience: bool) -> dict[str, float]:
+    """The already-rounded per-signal risk values `_score` computed, keyed to
+    match `_SIGNAL_ORDER`. An inactive experience signal reads as the neutral
+    baseline (it never joined the fusion, so it has nothing else to report)."""
+    return {
+        "reliability": scored["reliability_risk"],
+        "track_record": scored["track_risk"],
+        "counterfactual_avoid": scored["avoid_risk"],
+        "native_experience": scored["experience_risk"] if active_experience else _BASELINE,
+    }
+
+
+def _explain_formula(weights: dict[str, float]) -> str:
+    """A human-readable ``risk = w1×signal1 + w2×signal2 + ...`` string,
+    omitting any signal whose weight is ``0.0`` (it did not join the sum)."""
+    terms = [f"{weights[name]}×{name}" for name in _SIGNAL_ORDER if weights[name] > 0]
+    return "risk = " + " + ".join(terms)
+
+
+def explain_fix_risk(
+    action: str, module: str, root: str | Path = ".", recency: bool = True
+) -> dict:
+    """Deterministic, human-readable per-signal breakdown of ONE fix-risk score.
+
+    Runs the EXACT same fusion :func:`fix_risk` uses (via :func:`_score`), so
+    the breakdown can never diverge from the number a caller would get from
+    ``fix_risk(root, action, module, recency=recency)`` — this function does
+    not reimplement the arithmetic, it only shapes it for display.
+
+    Returns a dict with the resolved ``action_type``/``module``, the total
+    ``fixes`` recorded in the history (``0`` → an honest-empty caller can
+    render "no history"), the fused ``risk``, a human ``formula`` string, and
+    a ``signals`` list — one entry per :data:`_SIGNAL_ORDER` name, each with
+    its ``decayed_value`` (the same rounded per-signal risk :func:`_score`
+    returns), the ``weight`` actually applied in the fusion (``0.0`` for an
+    inactive experience signal), the ``contribution`` (``weight × value``,
+    rounded to :data:`_PRECISION`), and whether the signal is ``active``
+    (carried real evidence away from the neutral baseline — the SAME test
+    ``_score``'s ``evidence`` list already applies). Because every entry's
+    weight is the one truly used in the fusion, summing every entry's
+    ``contribution`` reconstructs the returned ``risk`` (within the rounding
+    tolerance of independently-rounded per-signal values).
+
+    ``recency`` defaults to ``True`` here (unlike :func:`fix_risk`'s
+    ``False``) because an explanation is read on demand, not cached, and the
+    recency-aware view is the more informative default for a human reviewing
+    one candidate; pass ``recency=False`` to explain the flat-weight score
+    instead. Best-effort: every loader beneath this is fail-safe, so a
+    missing or corrupt store degrades to the neutral baseline and never
+    raises."""
+    action_type = str(action)
+    module_name = str(module)
+    history = load_proof_history(root)
+    reliabilities = (
+        learned_reliability_decayed(history) if recency else learned_reliability(history)
+    )
+    summary = summarise_fix_track_record(history)
+    signatures = failure_signatures(history)
+    decayed_fragility = _module_fragility_decayed(history) if recency else None
+    scored = _score(
+        reliabilities, summary, signatures, action_type, module_name, root,
+        decayed_fragility,
+    )
+    active_experience = scored["experience_risk"] is not None
+    weights = _explain_weights(active_experience)
+    values = _explain_values(scored, active_experience)
+    evidence = set(scored["evidence"])
+    signals = [
+        {
+            "name": name,
+            "decayed_value": round(values[name], _PRECISION),
+            "weight": weights[name],
+            "contribution": round(weights[name] * values[name], _PRECISION),
+            "active": name in evidence,
+        }
+        for name in _SIGNAL_ORDER
+    ]
+    return {
+        "action_type": action_type,
+        "module": module_name,
+        "signals": signals,
+        "risk": scored["risk"],
+        "fixes": summary.get("fixes", 0),
+        "formula": _explain_formula(weights),
+    }
+
+
+def render_fix_risk_explanation(
+    action: str, module: str, root: str | Path = "."
+) -> str:
+    """Pure Markdown formatter over :func:`explain_fix_risk` (``recency=True``).
+
+    Deterministic: fixed section order, fixed precision, no time/random. With
+    no proof history at all (``fixes == 0``) renders an explicit honest-empty
+    notice instead of a table of signals that all abstain. Never raises."""
+    info = explain_fix_risk(action, module, root)
+    header = f"# Fix-Risk Explanation — {info['action_type']} / {info['module']}"
+    # The mode is DISCLOSED because it differs from the aggregate report's
+    # default: `apex fix-risk` (render_fix_risk_markdown) scores in the flat
+    # lifetime mode, so the same (action, module) can legitimately carry a
+    # different number there — an explanation that silently explained a
+    # different score than the report shows would be its own honesty bug.
+    lines: list[str] = [
+        header, "",
+        "Mode: recency-decayed (the aggregate `apex fix-risk` report uses "
+        "the flat lifetime mode — the two can legitimately differ).",
+        "", f"Risk: {info['risk']}",
+    ]
+    if not info["fixes"]:
+        lines.append("")
+        lines.append(
+            "_No proof history — every signal abstains at the neutral baseline._"
+        )
+        return "\n".join(lines) + "\n"
+
+    lines.append("")
+    lines.append("| Signal | Active | Decayed value | Weight | Contribution |")
+    lines.append("|---|---|---|---|---|")
+    for sig in info["signals"]:
+        active = "yes" if sig["active"] else "no"
+        lines.append(
+            f"| {sig['name']} | {active} | {sig['decayed_value']} | "
+            f"{sig['weight']} | {sig['contribution']} |"
+        )
+    lines.append("")
+    lines.append(f"Formula: {info['formula']}")
+    return "\n".join(lines) + "\n"
