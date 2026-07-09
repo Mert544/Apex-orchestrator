@@ -406,6 +406,88 @@ def _inlined_temps_return_expr(node: ast.FunctionDef | ast.AsyncFunctionDef) -> 
         return None
 
 
+# Literal-container return bodies (dict/list/tuple builders) were ALWAYS
+# learnable through the generic single-return path — what follows is the
+# previously-missing GATE on that surface, not a new shape: nesting depth,
+# constant-only dict keys, and per-element purity (a receiver-mutating call
+# like ``{'x': a.pop()}`` could be learned and then fool the doctest canary
+# across evals — the same duplication-risk class the inlined-temps fold
+# already polices). Mirrors ``_COMPREHENSION_NODES``'s style — a tuple of AST
+# node types this module treats specially. ``ast.Set`` is deliberately NOT
+# included: set-literal bodies stay on the unpoliced generic path unchanged
+# (pinned by test_set_literal_is_unaffected_falls_through_unchecked).
+_LITERAL_CONTAINER_NODES: tuple[type, ...] = (ast.Dict, ast.List, ast.Tuple)
+
+
+def _container_depth(node: ast.expr) -> int:
+    """The nesting depth of a Dict/List/Tuple literal ``node``: ``1`` for a
+    flat container (no nested container elements), or ``1 + N`` where ``N`` is
+    the deepest directly-nested container element's own depth. ``0`` when
+    ``node`` isn't a literal container at all.
+
+    Recursion is scoped STRICTLY to :data:`_LITERAL_CONTAINER_NODES` children —
+    it never descends through a ``Call``/``BinOp``/etc. boundary looking for a
+    container that isn't actually nested literally, and is bounded by the
+    literal's own (finite) AST size, so it can never cycle."""
+    if not isinstance(node, _LITERAL_CONTAINER_NODES):
+        return 0
+    elements = _container_own_elements(node)
+    nested = [_container_depth(e) for e in elements
+              if isinstance(e, _LITERAL_CONTAINER_NODES)]
+    return 1 + max(nested, default=0)
+
+
+def _container_own_elements(node: ast.Dict | ast.List | ast.Tuple) -> list[ast.expr]:
+    """The element/value sub-expressions of ONE literal container to police for
+    purity and depth: a dict's ``.values`` (keys are policed separately by
+    :func:`_container_keys_ok`), or a list/tuple's ``.elts``."""
+    if isinstance(node, ast.Dict):
+        return list(node.values)
+    return list(node.elts)
+
+
+def _container_keys_ok(node: ast.expr) -> bool:
+    """``True`` unless ``node`` is an ``ast.Dict`` with a non-``ast.Constant``
+    key — rejects both an expression key (``{expr_key: v}``) and a ``**``
+    dict-unpack entry (whose ``keys`` list carries a bare ``None``), the
+    brief's ``lit_key`` restriction. Vacuously ``True`` for List/Tuple (no
+    keys) and for anything that isn't a Dict at all."""
+    if not isinstance(node, ast.Dict):
+        return True
+    return all(isinstance(k, ast.Constant) for k in node.keys)
+
+
+def _container_shape_ok(node: ast.expr) -> bool:
+    """``True`` when ONE container literal ``node`` is safe to learn as a
+    builder element: nesting depth ``<= 2``, every dict key a constant, and
+    every element has ZERO method calls (:func:`_method_call_count` ``== 0`` —
+    stricter than the inlined-temps shape's ``> 1`` threshold, since no folding
+    step here already tolerates duplication risk — even ONE unproven-pure
+    receiver call disqualifies a container element)."""
+    if _container_depth(node) > 2:
+        return False
+    if not _container_keys_ok(node):
+        return False
+    return all(_method_call_count(e) == 0 for e in _container_own_elements(node))
+
+
+def _all_containers_ok(expr: str) -> bool:
+    """``True`` when EVERY Dict/List/Tuple literal appearing ANYWHERE in
+    ``expr`` passes :func:`_container_shape_ok` — vacuously ``True`` when
+    ``expr`` contains no literal container at all, and ``False`` when ``expr``
+    doesn't parse. The single new learn-time gate shared by BOTH the plain
+    literal-container shape and its guarded ternary variant (the guard
+    machinery is untouched — only the expression class this gate accepts
+    widens), so a container branch inside an existing guarded/elif shape is
+    caught here too."""
+    try:
+        tree = ast.parse(expr, mode="eval")
+    except (SyntaxError, ValueError):
+        return False
+    return all(_container_shape_ok(n) for n in ast.walk(tree)
+               if isinstance(n, _LITERAL_CONTAINER_NODES))
+
+
 def learn_return_exemplars(sources: list[str]) -> list[ReturnExemplar]:
     """Mine every ``return <expr>`` body from ``sources`` (the project's own code)
     into a deterministic, de-duplicated, sorted library of candidate bodies.
@@ -418,7 +500,13 @@ def learn_return_exemplars(sources: list[str]) -> list[ReturnExemplar]:
     ``return`` (``r = a + 1; return r`` -> ``a + 1``; chained temps fold in
     order) — AND the resulting expression references ONLY those params (a
     self-contained rule the native intelligence can safely transplant to another
-    function of the same arity — no free names, no globals)."""
+    function of the same arity — no free names, no globals). Whichever shape
+    the body takes, a literal Dict/List/Tuple appearing anywhere in the
+    resulting expression must ALSO pass :func:`_all_containers_ok` (nesting
+    depth <= 2, constant dict keys, zero method calls per element) — this
+    applies to plain container-builder returns AND to a container literal
+    inside a guarded/elif branch alike, since the gate walks the final
+    expression, not the source shape."""
     seen: set[ReturnExemplar] = set()
     for source in sources:
         try:
@@ -437,6 +525,8 @@ def learn_return_exemplars(sources: list[str]) -> list[ReturnExemplar]:
             if expr is None:
                 continue
             if not _expr_uses_only(expr, set(params)):
+                continue
+            if not _all_containers_ok(expr):
                 continue
             seen.add(ReturnExemplar(node.name, params, expr))
     # Sort on a TOTAL key: (arity, name, expr, params). ``params`` is the final
