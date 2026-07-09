@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import ast
 import difflib
+import json
 import keyword
 import re
 from collections.abc import Callable
@@ -73,6 +74,14 @@ class RenamePlan:
     # ``list(new_contents) + []`` is identical to today for every other plan, so
     # ``_verify_scoped`` is byte-for-byte unchanged. Sorted/deterministic.
     derived_from: list[str] = field(default_factory=list)
+    # The canonical native-intelligence idiom shapes (``p0 + p1`` …) this plan
+    # LANDED that ONLY a project-learned body supplied (no fixed template fit) —
+    # pure metadata the apply engine forwards to the experience memory
+    # (``native_proof_memory``) ONLY after the plan verifies and lands, so a
+    # proven idiom is remembered and ranked first next time. Empty for every plan
+    # that didn't land a native-only body (the common case), so this is inert for
+    # all existing objectives; never affects what the plan writes or how it gates.
+    native_shapes: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -511,9 +520,9 @@ def _verify_scoped(root: Path, plan: RenamePlan,
     import os
     from app.execution.target_env import inherited_pythonpath
     import subprocess
-    import sys
 
     from app.engine.test_impact import impacted_test_files
+    from app.skills.execution.run_tests import RunTestsSkill
 
     impacted = impacted_test_files(root, list(plan.new_contents) + plan.derived_from)
     if not impacted:
@@ -536,8 +545,20 @@ def _verify_scoped(root: Path, plan: RenamePlan,
     flags = ["-p", "no:cacheprovider"]
     flags = (["--continue-on-collection-errors", *flags] if delta
              else ["-x", *flags])
+    # INTERPRETER + PATH PARITY with the full-suite runner (audit 2026-07-08,
+    # finding 3): this gate used to run ``sys.executable`` — Apex's OWN Python —
+    # while the baseline capture, the full-suite gate, and the pytest-missing
+    # probe all use the TARGET's ``.venv`` when present. On an external project
+    # whose deps live only in its venv, the impacted tests would then SKIP
+    # (``importorskip``) or collection-error under Apex's interpreter: a fake
+    # green or a false red the other gates would never produce. Same for the
+    # PYTHONPATH: the runner also serves a genuine separated ``src``/``lib``
+    # flat-module dir (``_import_roots``); with only ``root`` on the path a
+    # scoped run on that layout collection-errors and every landing is vetoed.
+    runner = RunTestsSkill()
     proc = subprocess.run(
-        [sys.executable, "-m", "pytest", "-q", *flags, *deselect, *impacted],
+        [runner._python_for(root), "-m", "pytest", "-q",
+         *flags, *deselect, *impacted],
         cwd=str(root), capture_output=True, text=True, env={
             **os.environ,
             # Never write ``.pyc`` for the project under test. CPython's default
@@ -548,7 +569,9 @@ def _verify_scoped(root: Path, plan: RenamePlan,
             # behaviour and miss a real regression NON-deterministically. Mirrors
             # the import-oracle / test-shield probes, which already set this.
             "PYTHONDONTWRITEBYTECODE": "1",
-            "PYTHONPATH": str(root) + os.pathsep + inherited_pythonpath()})
+            "PYTHONPATH": os.pathsep.join(
+                p for p in [*runner._import_roots(root), inherited_pythonpath()]
+                if p)})
     if not delta:
         ok = proc.returncode == 0
         return ok, {"scoped": True, "tests": impacted,
@@ -567,7 +590,15 @@ def _scoped_delta_verdict(proc: object, impacted: list[str], plan: RenamePlan,
     ``regressed_functions``. ``ok`` is True iff that diff is empty (never-fake-green:
     a baseline-green test now red — including a NEW collection error — still blocks).
     The evidence discloses, honestly, how many pre-existing failures it tolerated
-    and what (if anything) the change introduced."""
+    and what (if anything) the change introduced.
+
+    VALIDITY guard first: the diff is only sound when pytest genuinely reached
+    its per-test summary — exit 0, or exit 1 WITH at least one parsed node line.
+    A collapsed run (usage error 4, nothing collected 5, interrupted 2, internal
+    error 3, or an interpreter whose ``-m pytest`` never launched: exit 1 with
+    zero node lines) yields an empty after-set for the WRONG reason, and diffing
+    it would read as "no regressions" — fake green. Such a run FAILS the move
+    (fail closed, honest ``delta_run_invalid`` evidence), never verifies it."""
     from app.execution._apply_verify import (
         _NODE_LINE,
         delta_green_disclosure,
@@ -576,6 +607,13 @@ def _scoped_delta_verdict(proc: object, impacted: list[str], plan: RenamePlan,
 
     text = (getattr(proc, "stdout", "") or "") + (getattr(proc, "stderr", "") or "")
     after = frozenset(_NODE_LINE.findall(text))
+    rc = getattr(proc, "returncode", None)
+    if rc not in (0, 1) or (rc == 1 and not after):
+        return False, {
+            "scoped": True, "tests": impacted,
+            "deselected": sorted(plan.scoped_excluded_nodes), "passed": False,
+            "delta_run_invalid": True, "returncode": rc,
+        }
     scoped_baseline = _baseline_for_files(baseline_failing, impacted)
     introduced = regressed_functions(scoped_baseline, after)
     ok = not introduced
@@ -611,6 +649,41 @@ def _withhold_uncovered(root: Path, plan: RenamePlan, created: list[str],
                       "the level its risk needs — previewed, not landed "
                       "(use --allow-weak to land)")
     return True
+
+
+def _write_pending_journal(root: Path, plan: RenamePlan,
+                           created: list[str]) -> Path:
+    """Persist an on-disk intent record BEFORE the tree is touched.
+
+    A per-move apply writes the planned files and only then verifies — a hard
+    kill (OOM, SIGKILL, a dropped container) in that window used to leave the
+    target tree MODIFIED with no record of what changed or how to undo it
+    (observed live: the interrupted ``pyparsing`` campaign). The journal holds
+    every planned file's pre-apply text (``null`` for a created file) so a
+    human — or a future reconcile pass — can restore byte-exactly. It is
+    written to ``.apex/`` (already scan-excluded), cleared the moment the move
+    SETTLES (kept, rolled back, or declined), and deterministic (sorted keys,
+    no clock)."""
+    path = root / ".apex" / "pending-apply.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema": "apex-pending-apply/1",
+        "changed": {rel: plan.originals.get(rel)
+                    for rel in sorted(plan.new_contents)},
+        "created": sorted(created),
+    }
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True),
+                    encoding="utf-8")
+    return path
+
+
+def _clear_pending_journal(path: Path) -> None:
+    """Remove the settled move's intent record (missing is fine — a plan that
+    never reached the write phase has nothing to clear)."""
+    try:
+        path.unlink()
+    except OSError:
+        pass
 
 
 def _stale_plan_reason(root: Path, plan: RenamePlan) -> str | None:
@@ -677,6 +750,30 @@ def apply_rename(project_root: str | Path, plan: RenamePlan, verify: bool = True
     # them — restoring `originals` only un-edits files that were already there;
     # a never-existed file has no original to restore and must be removed.
     created = [rel for rel in plan.new_contents if not (root / rel).exists()]
+    # INTERRUPT SAFETY (audit 2026-07-08): the intent journal lands on disk
+    # BEFORE the tree is touched, and the write+verify window is guarded so a
+    # KeyboardInterrupt/SIGTERM mid-verify rolls the move back byte-exactly and
+    # re-raises — the tree is never left silently modified by a cancelled run.
+    # Only a hard kill (SIGKILL/OOM) can escape the guard, and then the journal
+    # remains as the honest, reconcilable record of exactly what was in flight.
+    journal = _write_pending_journal(root, plan, created)
+    try:
+        return _write_verify_settle(root, plan, created, verify, impact_scope,
+                                    covered_only, tier, baseline_failing)
+    except BaseException:
+        _rollback(root, plan, created)
+        raise
+    finally:
+        _clear_pending_journal(journal)
+
+
+def _write_verify_settle(root: Path, plan: RenamePlan, created: list[str],
+                         verify: bool, impact_scope: bool, covered_only: bool,
+                         tier: int,
+                         baseline_failing: frozenset[str] | None) -> dict:
+    """The write→verify→settle body of :func:`apply_rename`, extracted so the
+    caller can wrap it in the interrupt guard (and stay under the complexity
+    ceiling). Behaviour byte-identical to the previously-inline tail."""
     for rel, content in plan.new_contents.items():
         (root / rel).parent.mkdir(parents=True, exist_ok=True)
         (root / rel).write_text(content, encoding="utf-8")

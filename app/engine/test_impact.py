@@ -20,8 +20,11 @@ __all__ = ["impacted_test_files"]
 
 
 def _is_test_file(rel: str) -> bool:
+    """Both pytest default ``python_files`` shapes: ``test_*.py`` and the
+    colocated ``*_test.py`` (a changed colocated test must run itself)."""
     name = Path(rel).name
-    return name.startswith("test_") and name.endswith(".py")
+    return name.endswith(".py") and (
+        name.startswith("test_") or name.endswith("_test.py"))
 
 
 def impacted_test_files(project_root: str | Path,

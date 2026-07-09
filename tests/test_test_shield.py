@@ -60,6 +60,31 @@ def test_generated_test_passes_when_run(tmp_path):
     assert proc.returncode == 0, proc.stdout + proc.stderr
 
 
+def test_singleton_oracle_uses_identity_not_equality(tmp_path):
+    """A captured ``None``/``True``/``False`` return is pinned with ``is``, never
+    ``==`` — so the generated test survives the project's OWN ``ruff`` gate.
+
+    ``assert fn(...) == None`` trips E711 (and ``== True``/``== False`` trip E712);
+    since Apex grades a cover-gaps landing with the same ruff, a naive ``==`` oracle
+    would emit a test that fails lint the instant it lands. Regression for that
+    self-inconsistency, found by dogfooding cover-gaps on Apex itself."""
+    rel = _make_pkg(tmp_path, "mypkg/singletons.py",
+                    "def gives_none(x):\n    return None\n"
+                    "def gives_true(x):\n    return True\n")
+    shield = generate_characterization_test(tmp_path, rel)
+    assert shield is not None
+    assert "is None" in shield.content
+    assert "is True" in shield.content
+    assert "== None" not in shield.content
+    assert "== True" not in shield.content
+
+    ruff = subprocess.run(
+        [sys.executable, "-m", "ruff", "check", "--select", "E711,E712", "-"],
+        input=shield.content, cwd=tmp_path, capture_output=True, text=True,
+    )
+    assert ruff.returncode == 0, ruff.stdout + ruff.stderr
+
+
 def test_only_main_falls_back_to_import_smoke(tmp_path):
     rel = _make_pkg(
         tmp_path,
@@ -683,8 +708,10 @@ def test_none_return_gets_a_value_oracle(tmp_path):
     )
     shield = generate_characterization_test(tmp_path, rel)
     assert shield is not None
-    # None is a simple literal -> the oracle pins it exactly.
-    assert "assert fn(0) == None" in shield.content
+    # None is a simple literal -> the oracle pins it exactly, via IDENTITY
+    # (`is None`) not equality, so the generated test passes the ruff E711 gate.
+    assert "assert fn(0) is None" in shield.content
+    assert "== None" not in shield.content
     path = write_shield_test(tmp_path, shield)
     proc = _run_generated(tmp_path, path)
     assert proc.returncode == 0, proc.stdout + proc.stderr

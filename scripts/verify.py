@@ -16,6 +16,20 @@ stdlib, so it works on Windows as well as Linux/macOS).
     python scripts/verify.py --lint-only   # ruff only
     python scripts/verify.py -- -x -k foo  # pass extra args through to pytest
     python scripts/verify.py --chunks 16 -j 8   # 16 chunks, 8 at a time (multi-core host)
+    python scripts/verify.py --impacted    # ONLY the tests reaching your changes
+    python scripts/verify.py --impacted --base main   # ...diffed against main
+
+The IMPACTED mode is the fast ITERATION loop (founder discipline, 2026-07-08:
+develop-velocity — never steal hours waiting on full gates mid-wave): it maps
+the files changed since ``--base`` (default: the branch's own origin ref)
+through Apex's OWN import-reachability engine (``impacted_test_files`` —
+transitive imports, conftest fixtures, literal dynamic imports) and runs ONLY
+those test files. It is loudly NOT the push gate: pushing still requires the
+full run above. Known contention-heavy test files (``HEAVY_SOLO``) are
+excluded from the parallel chunk pool and run SOLO after it — under full-CPU
+contention they time out flakily (3× in one day at -j4), each costing a
+~20-minute isolated re-run to prove innocent; running them contention-free
+kills that tax without weakening the gate.
 
 By default chunks run SEQUENTIALLY so a memory-constrained container never holds
 two suites at once (the OOM the chunking exists to prevent). On a host with more
@@ -37,6 +51,18 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 TESTS_DIR = ROOT / "tests"
 DEFAULT_CHUNKS = 4
+
+# Test files that flake under FULL-CPU contention (pytest chunks racing on all
+# cores) while passing reliably alone — each entry must carry evidence. They
+# are excluded from the parallel chunk pool and run SOLO (contention-free)
+# after it, so a red gate is a REAL red, not a 20-minute prove-the-flake tax.
+# Add a file only after it has flaked in ≥2 independent gate runs at the
+# canonical -j4 AND passed isolated re-runs each time.
+HEAVY_SOLO = (
+    # timed out/failed under -j4 load in 3 consecutive gates (2026-07-08),
+    # isolated re-run all-green each time (~97s solo for the slowest test).
+    "tests/test_stub_fstring_body_eyml.py",
+)
 
 
 def _pytest_env() -> dict[str, str]:
@@ -91,6 +117,77 @@ def _rel(p: Path) -> str:
         return str(p.relative_to(ROOT))
     except ValueError:
         return str(p)
+
+
+def split_heavy(files: list[Path],
+                heavy: tuple[str, ...] = HEAVY_SOLO) -> tuple[list[Path], list[Path]]:
+    """Partition the discovered test files into ``(chunk_pool, solo_tail)``.
+
+    Pure: membership by repo-relative posix path against ``heavy``; order
+    preserved on both sides, every file lands on exactly one side. The solo
+    tail runs contention-free AFTER the chunk phase (see module docstring)."""
+    pool: list[Path] = []
+    solos: list[Path] = []
+    for f in files:
+        (solos if _rel(f).replace("\\", "/") in heavy else pool).append(f)
+    return pool, solos
+
+
+def default_impacted_base() -> str:
+    """The default diff base for ``--impacted``: the branch's own origin ref
+    (what this wave has not pushed yet), else ``main``, else ``HEAD`` (an
+    empty diff — honest no-op). Best-effort and quiet."""
+    branch = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=str(ROOT),
+        capture_output=True, text=True).stdout.strip()
+    for candidate in (f"origin/{branch}" if branch else "", "main", "HEAD"):
+        if candidate and subprocess.run(
+                ["git", "rev-parse", "--verify", "--quiet", candidate],
+                cwd=str(ROOT), capture_output=True).returncode == 0:
+            return candidate
+    return "HEAD"
+
+
+def git_changed_files(base: str) -> list[str]:
+    """Repo-relative paths changed since ``base``: committed (``base...HEAD``),
+    staged, unstaged, and untracked — the full picture of what this wave
+    touched. Sorted, de-duplicated; a failing git command contributes nothing
+    (the selection then honestly shrinks toward empty rather than guessing)."""
+    commands = (
+        ["git", "diff", "--name-only", f"{base}...HEAD"],
+        ["git", "diff", "--name-only"],
+        ["git", "diff", "--name-only", "--cached"],
+        ["git", "ls-files", "--others", "--exclude-standard"],
+    )
+    changed: set[str] = set()
+    for cmd in commands:
+        proc = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True)
+        if proc.returncode == 0:
+            changed.update(line.strip() for line in proc.stdout.splitlines()
+                           if line.strip())
+    return sorted(changed)
+
+
+def impacted_selection(changed: list[str],
+                       root: Path = ROOT) -> tuple[list[Path], list[str]]:
+    """Map changed files to ``(test_paths_to_run, uncovered_py_files)`` via
+    Apex's own impact engine (``app.engine.test_impact.impacted_test_files`` —
+    transitive imports, conftest fixtures, literal dynamic imports).
+
+    ``uncovered_py_files`` lists the changed ``.py`` files NO test reaches —
+    disclosed loudly so an impacted-green run never silently implies those
+    were exercised (never-fake-green applies to the fast gate too)."""
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+    from app.engine.test_impact import impacted_test_files
+
+    py_changed = [c for c in changed
+                  if c.endswith(".py") and (root / c).exists()]
+    impacted = impacted_test_files(root, py_changed)
+    uncovered = [c for c in py_changed
+                 if not c.startswith("tests/")
+                 and not impacted_test_files(root, [c])]
+    return [root / rel for rel in impacted], uncovered
 
 
 def run_chunk(files: list[Path], extra: list[str]) -> int:
@@ -179,6 +276,14 @@ def _build_parser() -> argparse.ArgumentParser:
                              "gate stays 1). Pairs well with more --chunks.")
     parser.add_argument("--no-lint", action="store_true", help="skip ruff")
     parser.add_argument("--lint-only", action="store_true", help="run ruff only")
+    parser.add_argument("--impacted", action="store_true",
+                        help="fast ITERATION mode: run only the test files that "
+                             "reach the files changed since --base (import "
+                             "reachability). NOT the push gate — pushing still "
+                             "requires the full run.")
+    parser.add_argument("--base", default="",
+                        help="diff base for --impacted (default: the branch's "
+                             "own origin ref, else main)")
     parser.add_argument("pytest_args", nargs="*",
                         help="extra args passed through to pytest (after --)")
     return parser
@@ -217,14 +322,49 @@ def render_summary(results: list[tuple[str, int]], elapsed: float) -> tuple[list
     return lines, 0
 
 
+def _run_labelled(labelled: list[tuple[str, list[Path]]], args,
+                  results: list[tuple[str, int]]) -> None:
+    """Run labelled chunks (parallel when ``-j`` allows, else streamed) and
+    append their outcomes — the one shared runner for every mode."""
+    if args.jobs > 1 and len(labelled) > 1:
+        results.extend(run_chunks_parallel(labelled, args.pytest_args, args.jobs))
+        return
+    for label, chunk in labelled:
+        print(f"\n===== {label} — {len(chunk)} file(s) =====", flush=True)
+        results.append((label, run_chunk(chunk, args.pytest_args)))
+
+
+def _run_impacted(args, results: list[tuple[str, int]]) -> None:
+    """The ``--impacted`` fast-iteration mode: honest banner, reachability
+    selection, loud disclosure of changed files no test reaches."""
+    base = args.base or default_impacted_base()
+    changed = git_changed_files(base)
+    files, uncovered = impacted_selection(changed)
+    print(f"⚡ IMPACTED gate — {len(changed)} changed file(s) vs {base} → "
+          f"{len(files)} test file(s) by import reachability.")
+    print("   NOT the push gate: pushing still requires the full run "
+          "(python scripts/verify.py --chunks 16 -j 4).")
+    for rel in uncovered:
+        print(f"   ⚠ no test reaches {rel} — an impacted-green does NOT vouch for it")
+    if not files:
+        print("   (no impacted tests — nothing to run)")
+        return
+    sel = chunk_files(files, max(1, min(args.chunks, len(files))))
+    labelled = [(f"impacted {i}/{len(sel)}", c) for i, c in enumerate(sel, 1)]
+    _run_labelled(labelled, args, results)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
 
     start = time.time()
     results: list[tuple[str, int]] = []
 
-    if not args.lint_only:
-        all_chunks = chunk_files(discover_tests(), args.chunks)
+    if not args.lint_only and args.impacted:
+        _run_impacted(args, results)
+    elif not args.lint_only:
+        pool, solos = split_heavy(discover_tests())
+        all_chunks = chunk_files(pool, args.chunks)
         if args.chunk and not chunk_in_range(args.chunk, len(all_chunks)):
             print(f"⛔ --chunk {args.chunk} out of range (1..{len(all_chunks)})")
             return 2
@@ -233,10 +373,13 @@ def main(argv: list[str] | None = None) -> int:
             (chunk_label(i, args.chunk, len(all_chunks), len(selected)), chunk)
             for i, chunk in enumerate(selected, 1)
         ]
-        if args.jobs > 1 and len(labelled) > 1:
-            results.extend(run_chunks_parallel(labelled, args.pytest_args, args.jobs))
-        else:
-            for label, chunk in labelled:
+        _run_labelled(labelled, args, results)
+        # The contention-heavy solo tail: full runs only (a --chunk K fast
+        # re-run targets the pool partition), one file per process, AFTER the
+        # parallel phase so nothing races it on the cores.
+        if not args.chunk:
+            solo_labelled = [(f"solo {_rel(f)}", [f]) for f in solos]
+            for label, chunk in solo_labelled:
                 print(f"\n===== {label} — {len(chunk)} file(s) =====", flush=True)
                 results.append((label, run_chunk(chunk, args.pytest_args)))
 

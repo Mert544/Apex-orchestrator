@@ -127,8 +127,11 @@ def test_stmtfacts_byte_identical_state():
 
 
 def test_slots_unchanged():
-    """The refactor keeps the same ``__slots__`` layout."""
-    assert refactored.__slots__ == original.__slots__
+    """The refactor keeps every ORIGINAL ``__slots__`` field; the later
+    definite-assignment fix (packaging.licenses UnboundLocalError) deliberately
+    ADDS exactly one — ``definite`` — so the layout is a strict superset."""
+    assert set(original.__slots__) <= set(refactored.__slots__)
+    assert set(refactored.__slots__) - set(original.__slots__) == {"definite"}
 
 
 def test_harness_covers_every_branch():

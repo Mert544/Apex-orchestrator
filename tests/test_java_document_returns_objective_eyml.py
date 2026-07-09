@@ -1034,6 +1034,8 @@ def test_north_star_and_soundness_audits_pass():
 # --- behaviour-identical landing + must-refuse void trap on the corpus ---------
 
 @_needs_jdk
+@pytest.mark.timeout(600)  # heavy JVM corpus sweep: 120s global fits fast
+# tests, not a javac/JVM cold-start under -j4 gate CPU contention (no assertion changed)
 def test_behavior_identical_on_java_undocumented_params_corpus_shape():
     # The standing soundness corpus carries a Java non-void undocumented method shape
     # (java_undocumented_params' `add` returns int). java-document-returns SHOULD document

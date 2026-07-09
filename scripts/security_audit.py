@@ -6,6 +6,7 @@ tools. Fails the pipeline if critical risks are detected.
 """
 from __future__ import annotations
 
+import ast
 import json
 import sys
 from pathlib import Path
@@ -50,6 +51,97 @@ def _fn_risks(fn: dict, rel: str) -> list[dict]:
 
 def _is_critical(risk: dict) -> bool:
     return any(p in risk["risk"] for p in _CRITICAL_PATTERNS)
+
+
+# ------------------------------------------------------------------------- #
+# Acknowledged suppressions — bandit's `# nosec` convention, honored here.
+#
+# A critical call site annotated `# nosec <rule> - <rationale>` (the form
+# app/execution/stub_synthesis.py already carries on its deliberate,
+# fixed-template eval/exec sites) is reported as ACKNOWLEDGED instead of
+# failing the pipeline. Strictly fail-closed: an unreadable file, an
+# unresolvable function, a call we cannot locate, or ANY matching call in the
+# function without its own annotation keeps the risk CRITICAL. Acknowledged
+# risks stay fully visible in the report and the console output — this is an
+# audit trail, never a mute button.
+# ------------------------------------------------------------------------- #
+
+def _parsed_with_nosec(path: Path, cache: dict):
+    """``(ast.Module, {line numbers carrying '# nosec'})`` for ``path``,
+    cached; ``None`` (→ fail closed) when unreadable or unparseable."""
+    if path not in cache:
+        try:
+            source = path.read_text(encoding="utf-8")
+            nosec = {n for n, line in enumerate(source.splitlines(), 1)
+                     if "# nosec" in line}
+            cache[path] = (ast.parse(source), nosec)
+        except (OSError, SyntaxError, ValueError):
+            cache[path] = None
+    return cache[path]
+
+
+def _named_function(tree: ast.Module, dotted: str):
+    """Resolve the analyzer's function name (``fn`` or ``Class.method``) back
+    to its AST node — the same top-level/method shape ``analyze_file`` walks."""
+    cls_name, _, method = dotted.rpartition(".")
+    for node in tree.body:
+        if (not cls_name
+                and isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name == dotted):
+            return node
+        if cls_name and isinstance(node, ast.ClassDef) and node.name == cls_name:
+            for item in node.body:
+                if (isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+                        and item.name == method):
+                    return item
+    return None
+
+
+def _matching_call_spans(fn_node, message: str) -> list[tuple[int, int]]:
+    """Line spans of every call in ``fn_node`` whose analyzer risk message is
+    ``message`` — reuses the analyzer's own ``_call_risk`` so the audit and
+    the detector can never disagree about what was flagged."""
+    spans: list[tuple[int, int]] = []
+    for sub in ast.walk(fn_node):
+        if isinstance(sub, ast.Call):
+            hit = FunctionFractalAnalyzer._call_risk(sub)
+            if hit is not None and hit[0] == message:
+                spans.append((sub.lineno, sub.end_lineno or sub.lineno))
+    return spans
+
+
+def _is_acknowledged(risk: dict, project_root: Path, cache: dict) -> bool:
+    """True ONLY when every call this critical risk points at carries an
+    explicit ``# nosec`` annotation within its own line span."""
+    parsed = _parsed_with_nosec(project_root / risk["file"], cache)
+    if parsed is None:
+        return False
+    tree, nosec_lines = parsed
+    fn_node = _named_function(tree, risk["function"])
+    if fn_node is None:
+        return False
+    spans = _matching_call_spans(fn_node, risk["risk"])
+    if not spans:
+        return False
+    return all(any(line in nosec_lines for line in range(start, end + 1))
+               for start, end in spans)
+
+
+def _split_acknowledged(buckets: dict[str, list[dict]],
+                        project_root: Path) -> dict[str, list[dict]]:
+    """Move `# nosec`-annotated criticals into their own ``acknowledged``
+    bucket; unannotated criticals stay critical (and still fail the run)."""
+    cache: dict = {}
+    still_critical: list[dict] = []
+    acknowledged: list[dict] = []
+    for risk in buckets["critical"]:
+        if _is_acknowledged(risk, project_root, cache):
+            acknowledged.append(risk)
+        else:
+            still_critical.append(risk)
+    buckets["critical"] = still_critical
+    buckets["acknowledged"] = acknowledged
+    return buckets
 
 
 def _severity(risk: dict) -> str:
@@ -97,12 +189,14 @@ def _build_report(project_root: Path, profile, all_risks: list[dict],
             "functions_analyzed": functions_analyzed,
             "total_risks": len(all_risks),
             "critical": len(buckets["critical"]),
+            "acknowledged": len(buckets["acknowledged"]),
             "high": len(buckets["high"]),
             "medium": len(buckets["medium"]),
             "low": len(buckets["low"]),
         },
         "risks": {
             "critical": buckets["critical"],
+            "acknowledged": buckets["acknowledged"],
             "high": buckets["high"],
             "medium": buckets["medium"],
             "low": buckets["low"],
@@ -121,7 +215,7 @@ def _persist_report(project_root: Path, report: dict) -> None:
 def run_audit(project_root: Path) -> dict:
     profile = ProjectProfiler(project_root).profile()
     all_risks, functions_analyzed = _scan(project_root)
-    buckets = _categorize(all_risks)
+    buckets = _split_acknowledged(_categorize(all_risks), project_root)
     report = _build_report(project_root, profile, all_risks, functions_analyzed, buckets)
     _persist_report(project_root, report)
     return report
@@ -139,10 +233,17 @@ def main() -> int:
     print(f"Files:        {summary['total_files']}")
     print(f"Functions:    {summary['functions_analyzed']}")
     print(f"Critical:     {summary['critical']}")
+    print(f"Acknowledged: {summary['acknowledged']}")
     print(f"High:         {summary['high']}")
     print(f"Medium:       {summary['medium']}")
     print(f"Low:          {summary['low']}")
     print("=" * 60)
+
+    if summary["acknowledged"] > 0:
+        print("\nACKNOWLEDGED RISKS (explicit `# nosec` at every call site — "
+              "reviewed, visible, not pipeline-failing):")
+        for r in report["risks"]["acknowledged"]:
+            print(f"  [{r['file']}::{r['function']}] {r['risk']}")
 
     if summary["critical"] > 0:
         print("\nCRITICAL RISKS DETECTED — failing pipeline.")

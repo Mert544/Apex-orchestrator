@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import Any
 
 from app.engine.idea_memory import MEMORY_REL
+from app.engine.manifesto import derive_manifesto, render_manifesto_markdown
 from app.engine.proof_history import load_proof_history, summarise_fix_track_record
 
 SCHEMA_VERSION = 1
@@ -52,6 +53,7 @@ _DREAM_DIGEST_REL = ".apex/dream-digest.md"
 _PROOF_REL = ".apex/proof-of-fix.json"
 _AGENDA_REL = ".apex/agenda.json"
 _EPISTEMIC_REL = ".epistemic/memory.json"
+_NATIVE_EXPERIENCE_REL = ".apex/native-mind-experience.json"
 
 
 def _absent(source: str) -> dict[str, Any]:
@@ -177,6 +179,47 @@ def _epistemic_section(root: Path) -> dict[str, Any]:
     }
 
 
+def _manifesto_section(root: Path) -> dict[str, Any]:
+    """The project's LEARNED MANIFESTO (:mod:`app.engine.manifesto`) as a vault
+    section — the architectural laws (AVOID / TRUST / FRAGILE / proven idioms)
+    Apex has synthesised from its OTHER stores.
+
+    Unlike the raw-passthrough sections above, the manifesto has no store of its
+    own: :func:`derive_manifesto` re-reads ``proof-of-fix.json`` and
+    ``native-mind-experience.json`` on every call, so this section is DERIVED,
+    not stored — it mirrors ``track_record``'s "derived, not stored" contract
+    (``derived_from`` + a live-computed ``present``) rather than
+    ``_json_section``/``_text_section``'s file-existence check. COUNT summaries
+    plus the rendered markdown (via :func:`render_manifesto_markdown`) are kept
+    here, not the raw law lists, matching :func:`_epistemic_section`'s
+    count-only discipline.
+
+    Tolerant: ``derive_manifesto`` itself never raises (every underlying loader
+    tolerates missing/malformed state), but this section double-guards so a
+    manifesto section can never break the vault. A project with no ``.apex``
+    history yields ``present: False`` and an honest "legislated no laws yet"
+    markdown body, exactly like a fresh :func:`app.engine.manifesto.derive_manifesto`.
+    """
+    try:
+        manifesto = derive_manifesto(root)
+    except Exception:
+        manifesto = {"avoid": [], "trust": [], "fragile": [], "proven_idioms": []}
+    avoid = manifesto.get("avoid") or []
+    trust = manifesto.get("trust") or []
+    fragile = manifesto.get("fragile") or []
+    idioms = manifesto.get("proven_idioms") or []
+    return {
+        "derived_from": f"{_PROOF_REL} + {_NATIVE_EXPERIENCE_REL}",
+        "present": bool(avoid or trust or fragile or idioms),
+        "readable": True,
+        "avoid": len(avoid),
+        "trust": len(trust),
+        "fragile": len(fragile),
+        "proven_idioms": len(idioms),
+        "text": render_manifesto_markdown(manifesto),
+    }
+
+
 def load_vault_view(project_root: str | Path) -> dict[str, Any]:
     """Compose the vault view from the live stores (pure read, no writes)."""
     root = Path(project_root)
@@ -210,6 +253,11 @@ def load_vault_view(project_root: str | Path) -> dict[str, Any]:
             # `apex scan`/`apex run` (.epistemic/memory.json), summarised as
             # counts only — read as BYTES, never via PersistentMemoryStore.
             "epistemic_memory": _epistemic_section(root),
+            # Eighth section: the LIVING MANIFESTO — the architectural laws
+            # `app.engine.manifesto` synthesises from the sections above. It is
+            # the one section derived from other stores rather than its own file
+            # (see `_manifesto_section`).
+            "manifesto": _manifesto_section(root),
         },
     }
 
@@ -297,6 +345,10 @@ def _section_line(name: str, section: dict[str, Any]) -> str:
         return (f"- **{name}** — {section['known_claims']} claim(s) / "
                 f"{section['known_questions']} question(s) / "
                 f"{section['runs']} run(s) (`{section['source']}`)")
+    if name == "manifesto":
+        return (f"- **{name}** — {section['avoid']} avoid / {section['fragile']} fragile / "
+                f"{section['trust']} trust / {section['proven_idioms']} proven idiom law(s) "
+                f"(derived from `{section['derived_from']}`)")
     data = section.get("data")
     if isinstance(data, list):
         size = f"{len(data)} entrie(s)"

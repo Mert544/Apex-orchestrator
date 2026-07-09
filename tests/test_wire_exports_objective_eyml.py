@@ -152,6 +152,52 @@ def test_render_none_when_nothing_to_export(tmp_path: Path):
     assert render_init_source(plan, "") is None
 
 
+def test_existing_all_is_replaced_not_duplicated(tmp_path: Path):
+    # REGRESSION: an __init__ that ALREADY declares a curated __all__ AND still has
+    # a DECLARED-but-unwired name to satisfy must yield exactly ONE __all__ — the
+    # merged list — not the old one left dead above a freshly-appended second block.
+    # (Found wiring an external package with a hand-curated __all__: Apex emitted a
+    # duplicate __all__, the first clobbered by the second.) `beta` is IN the curated
+    # __all__ but not yet imported, so wire-exports satisfies it (design: authoritative
+    # but not inert) and re-emits the __all__ once.
+    init = (
+        "from .aaa import alpha\n\n"
+        "__all__ = [\n"
+        '    "alpha",\n'
+        '    "beta",\n'
+        "]\n"
+    )
+    pkg = _pkg(tmp_path, {
+        "aaa.py": "def alpha():\n    return 1\n",
+        "bbb.py": "def beta():\n    return 2\n",  # declared in __all__, not yet wired
+    }, init=init)
+    plan = collect_package_exports(pkg, init)
+    out = render_init_source(plan, init)
+    assert out is not None
+    # Exactly one __all__ assignment — the duplicate is the bug.
+    assert out.count("__all__ = [") == 1
+    # The single merged list, sorted, satisfying the curated declaration.
+    assert out == (
+        "from .aaa import alpha\n"
+        "\n"
+        "from .bbb import beta\n"
+        "\n"
+        "__all__ = [\n"
+        '    "alpha",\n'
+        '    "beta",\n'
+        "]\n"
+    )
+    # And the rendered candidate re-parses (valid syntax, single binding).
+    import ast as _ast
+    tree = _ast.parse(out)
+    all_assigns = [
+        n for n in tree.body
+        if isinstance(n, _ast.Assign)
+        and any(isinstance(t, _ast.Name) and t.id == "__all__" for t in n.targets)
+    ]
+    assert len(all_assigns) == 1
+
+
 # --- plan layer: full wire, no-op, refusal -----------------------------------
 
 def test_plan_wires_public_symbols(tmp_path: Path):
@@ -263,10 +309,14 @@ def test_bare_imports_are_not_folded_into_all(tmp_path: Path):
     assert "OrderedDict" not in names
 
 
-def test_explicit_human_all_entry_is_honored_even_if_imported(tmp_path: Path):
-    # If a human DELIBERATELY listed a name in a literal __all__ — even an imported
-    # one like `os` — that is their declared public surface and must be preserved.
-    # Only AUTO-folding of bare imports is wrong; an explicit choice is honored.
+def test_curated_all_is_authoritative_and_not_widened(tmp_path: Path):
+    # A curated __all__ is the maintainer's AUTHORITATIVE public surface:
+    #  * a name they explicitly listed (even an import like `os`) is honored;
+    #  * a bare import they did NOT list (`sys`) is never auto-folded;
+    #  * a sibling symbol they OMITTED (`engine`) is NOT added on top.
+    # wire-exports satisfies a curated __all__ but must not WIDEN it — honoring
+    # human intent and under-claiming. (This corrects the earlier behaviour that
+    # widened a curated __all__, which leaked internals wiring `humanize`.)
     init = (
         "import os\n"
         "import sys\n"
@@ -277,9 +327,56 @@ def test_explicit_human_all_entry_is_honored_even_if_imported(tmp_path: Path):
     pkg = _pkg(tmp_path, {"core.py": "def engine():\n    return 1\n"}, init=init)
     plan = collect_package_exports(pkg, init)
     names = rendered_all_names(plan, init)
-    assert "os" in names      # human explicitly listed it — honored
-    assert "sys" not in names  # never listed, never auto-folded
-    assert "engine" in names   # newly-wired sibling export
+    assert "os" in names          # human explicitly listed it — honored
+    assert "sys" not in names     # never listed, never auto-folded
+    assert "engine" not in names  # sibling the maintainer omitted — NOT widened
+    # And nothing new is wired, so it is an honest no-op (curated surface intact).
+    assert plan.exports == {}
+
+
+def test_curated_all_names_an_unwired_symbol_gets_wired(tmp_path: Path):
+    # Authoritative does NOT mean inert: if a curated __all__ DECLARES a name that
+    # is not yet imported, wire-exports SATISFIES the declaration by wiring the
+    # missing import (completing the maintainer's stated intent) — it just never
+    # adds names BEYOND the curated list.
+    init = (
+        "__all__ = [\n"
+        '    "engine",\n'
+        "]\n"
+    )
+    pkg = _pkg(tmp_path, {
+        "core.py": "def engine():\n    return 1\n",
+        "extra.py": "def helper():\n    return 2\n",  # public but NOT in __all__
+    }, init=init)
+    plan = collect_package_exports(pkg, init)
+    assert plan.exports == {"engine": "core"}   # declared-but-unwired name satisfied
+    assert "helper" not in plan.exports         # omitted sibling stays omitted
+
+
+def test_no_all_still_pins_complete_surface(tmp_path: Path):
+    # The primary use case is UNCHANGED: with no explicit __all__ the package is
+    # unopinionated, so wire-exports still collects every public sibling symbol.
+    pkg = _pkg(tmp_path, {
+        "core.py": "def engine():\n    return 1\n",
+        "io.py": "class Loader:\n    pass\n",
+    })
+    plan = collect_package_exports(pkg, "")
+    assert set(plan.exports) == {"engine", "Loader"}
+
+
+def test_type_checking_sentinel_is_never_exported(tmp_path: Path):
+    # `TYPE_CHECKING = False` is the runtime-sentinel idiom, not public API. Even
+    # with NO curated __all__ (so every other public sibling symbol IS wired), it
+    # must never be folded into __all__ (it would leak a bool as a package export).
+    pkg = _pkg(tmp_path, {
+        "mod.py": "TYPE_CHECKING = False\nif TYPE_CHECKING:\n    import typing\n"
+                  "def real_api():\n    return 1\n",
+    })
+    assert "TYPE_CHECKING" not in public_symbols_of_module(
+        (pkg / "mod.py").read_text())
+    plan = collect_package_exports(pkg, "")
+    assert "real_api" in plan.exports          # genuine API wired
+    assert "TYPE_CHECKING" not in plan.exports  # sentinel excluded
 
 
 def test_defs_classes_assignments_in_init_are_folded(tmp_path: Path):

@@ -48,7 +48,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import difflib
-import os
 from pathlib import Path
 from typing import Any
 
@@ -56,6 +55,11 @@ from app.engine.objective_compiler import (
     SESSION_OBJECTIVES,
     CompileResult,
     compile_objective,
+)
+from app.engine.tree_snapshot import (
+    SKIP_DIRS as _SKIP_DIRS,  # noqa: F401  (re-export under the historical name)
+    restore_py_tree,
+    snapshot_py_tree,
 )
 from app.engine.value_landed import value_landed_from_session
 
@@ -71,6 +75,12 @@ __all__ = [
 TIER_VERIFIED = "verified"   # suite ran green AND a test exercises the change
 TIER_WEAK = "weak"           # suite ran green but NO test references the change
 TIER_NO_SUITE = "no-suite"   # the move landed but NO suite could verify it
+# The DISTINCT report-only tier: a dry-run (``apply=False``) move was PROJECTED,
+# not applied — no write happened and no suite ran, so neither "verified" nor
+# "no-suite" ("applied but no suite could verify it") is an honest label. Keyed
+# off the CompileResult's ``applied`` flag in ``_collect_objective``; an applied
+# session never carries it, so applied-mode reports are byte-identical.
+TIER_PREVIEW = "preview"     # dry run: not applied yet; test-verified on --apply
 
 
 def _verification_unavailable_message(interpreter: str) -> str:
@@ -86,12 +96,11 @@ def _verification_unavailable_message(interpreter: str) -> str:
 
     return verification_unavailable_message(interpreter)
 
-# Directories never worth snapshotting for the diff (caches, vcs, venvs, the
-# .apex memory store). Skipping them keeps the snapshot — and so the report — a
-# stable function of the project's own source, not its incidental tooling state.
-_SKIP_DIRS = {".git", ".hg", ".svn", ".apex", ".venv", "venv", "__pycache__",
-              ".mypy_cache", ".pytest_cache", ".ruff_cache", "node_modules",
-              ".tox", "build", "dist", ".eggs"}
+# The directories never worth snapshotting (caches, vcs, venvs, the .apex
+# memory store) now live in :data:`app.engine.tree_snapshot.SKIP_DIRS` — the
+# snapshot/restore pair moved to that LEAF so the objective compiler's
+# end-of-campaign backstop reuses the identical semantics without an import
+# cycle through this module. Re-exported above as ``_SKIP_DIRS``.
 
 
 @dataclass
@@ -167,6 +176,14 @@ class SessionReport:
     # stand. Only ever ``True`` on a RED baseline that actually applied changes; the
     # GREEN-baseline path gates full-suite per move and never reaches this.
     regression_rolled_back: bool = False
+    # Did the end-of-session backstop's suite RE-RUN itself collapse (usage
+    # error, nothing collected, timeout — pytest never reached its per-test
+    # summary)? Such a run's empty node set is NOT "no regressions"; it measured
+    # nothing. The session is rolled back (fail closed) and this flag discloses
+    # WHY: the backstop could not vouch for the tree, so the tree was restored.
+    # ``False`` (default) = the re-run was comparable and the verdict above is
+    # the real diff.
+    backstop_run_invalid: bool = False
     # The sorted node ids that were GREEN at baseline but RED after the session —
     # the evidence behind a ``regression_rolled_back``. Empty unless a regression
     # was detected (and rolled back), so a clean session's artifact is unchanged.
@@ -218,6 +235,13 @@ class SessionReport:
                    if m.tier == TIER_NO_SUITE)
 
     @property
+    def preview_moves(self) -> int:
+        """Dry-run (report-only) moves — projected, NOT applied, so they never
+        count toward any applied tier (the ``no-suite`` mislabel this replaces)."""
+        return sum(1 for o in self.objectives for m in o.moves
+                   if m.tier == TIER_PREVIEW)
+
+    @property
     def objectives_with_work(self) -> list[SessionObjective]:
         return [o for o in self.objectives if o.moves]
 
@@ -243,6 +267,11 @@ class SessionReport:
             "objectives": [o.to_dict() for o in self.objectives],
             "diff": self.diff,
         }
+        if self.preview_moves:
+            # ADDITIVE: present only on a report-only run that projected moves
+            # (an applied session never carries the preview tier), so every
+            # applied report's dict is byte-identical to before.
+            data["preview_moves"] = self.preview_moves
         if self.pytest_missing:
             # Surface the LOUD message in --json too, so a machine consumer gets
             # the same actionable diagnostic the markdown shows (never a silent,
@@ -256,22 +285,11 @@ class SessionReport:
 def _snapshot(root: Path) -> dict[str, str]:
     """Map of ``rel_posix_path -> source`` for every ``.py`` file under ``root``.
 
-    Skips caches/vcs/venv dirs (``_SKIP_DIRS``) so the snapshot is a stable
-    function of the project's own source. Walked in sorted order for a
-    deterministic file set; an unreadable file is simply omitted."""
-    out: dict[str, str] = {}
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = sorted(d for d in dirnames if d not in _SKIP_DIRS)
-        for name in sorted(filenames):
-            if not name.endswith(".py"):
-                continue
-            path = Path(dirpath) / name
-            try:
-                out[path.relative_to(root).as_posix()] = path.read_text(
-                    encoding="utf-8")
-            except OSError:
-                continue
-    return out
+    Thin delegator over the shared LEAF :func:`app.engine.tree_snapshot.
+    snapshot_py_tree` (extracted verbatim from here so the objective compiler's
+    end-of-campaign backstop captures with IDENTICAL semantics). Kept as a
+    module-level name so existing callers/tests keep their seam."""
+    return snapshot_py_tree(root)
 
 
 def _tier_for(step: Any) -> str:
@@ -297,13 +315,20 @@ def _tier_for(step: Any) -> str:
 
 
 def _collect_objective(result: CompileResult) -> SessionObjective:
-    """Fold one objective's CompileResult into the session's per-objective view."""
+    """Fold one objective's CompileResult into the session's per-objective view.
+
+    The tier is keyed off the result's ``applied`` flag: an APPLIED step earns
+    its coverage-aware tier (:func:`_tier_for`, byte-identical to before), but a
+    DRY-RUN step was only PROJECTED — nothing was applied and no suite ran, so
+    reading its raw ``verified=False`` as ``no-suite`` ("applied but no suite
+    could verify it") would be doubly false. It carries the distinct
+    :data:`TIER_PREVIEW` instead."""
     obj = SessionObjective(objective=result.objective)
     for step in result.steps:
         obj.moves.append(SessionMove(
             objective=result.objective, operator=step.operator,
             target=step.target, description=step.description,
-            tier=_tier_for(step)))
+            tier=_tier_for(step) if result.applied else TIER_PREVIEW))
     obj.blocked = list(result.blocked)
     return obj
 
@@ -402,32 +427,35 @@ def _failing_nodes(root: Path) -> frozenset[str]:
     return nodes
 
 
+def _failing_nodes_checked(root: Path) -> tuple[bool, frozenset[str]]:
+    """``(run_valid, failing_node_ids)`` — the validity-aware re-run the
+    END-OF-SESSION backstop must use.
+
+    ``run_valid`` is False when the re-run COLLAPSED before its per-test summary
+    (usage error, nothing collected, timeout, pytest never launched): its
+    empty/truncated node set would diff against the red baseline as "no
+    regressions" and the backstop would silently keep a possibly-broken tree —
+    the exact hole the backstop exists to close. The caller fails CLOSED on
+    ``False``. Delegates to the shared
+    :func:`app.execution._apply_verify.suite_failing_nodes_checked` so the
+    validity rule is written exactly once."""
+    from app.execution._apply_verify import suite_failing_nodes_checked
+
+    _available, valid, nodes = suite_failing_nodes_checked(root)
+    return valid, nodes
+
+
 def _restore_snapshot(root: Path, before: dict[str, str],
                       after: dict[str, str]) -> None:
     """Roll the tree back to the pre-session ``before`` snapshot, byte-for-byte.
 
-    Mirrors ``apply_rename``'s rollback semantics: every file the session MODIFIED
-    is rewritten to its exact pre-session bytes, and every file the session CREATED
-    (present in ``after`` but absent from ``before``) is deleted. Walked in sorted
-    order for determinism; a file deleted by the session is recreated from
-    ``before``. Best-effort per path (an unwritable path is skipped) but the common
-    case restores the whole working tree to its captured baseline state."""
-    for rel in sorted(set(before) | set(after)):
-        path = root / rel
-        if rel in before:
-            if after.get(rel) == before[rel]:
-                continue
-            try:
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(before[rel], encoding="utf-8")
-            except OSError:
-                continue
-        else:
-            # Created by the session — remove it to restore the baseline tree.
-            try:
-                path.unlink()
-            except OSError:
-                continue
+    Thin delegator over the shared LEAF :func:`app.engine.tree_snapshot.
+    restore_py_tree` (extracted verbatim from here so the objective compiler's
+    end-of-campaign backstop restores with IDENTICAL semantics): every file the
+    session MODIFIED is rewritten to its exact pre-session bytes, and every file
+    the session CREATED is deleted. Kept as a module-level name so existing
+    callers/tests keep their seam."""
+    restore_py_tree(root, before, after)
 
 
 def _regressed_nodes(baseline_failing: frozenset[str],
@@ -490,8 +518,18 @@ def _maybe_rollback_regression(
     baseline-green node regressed, RESTORE every file to its pre-session bytes
     (delete created ones) — the sound, transform-agnostic guard. A node already
     failing at baseline is NOT a regression (honest disclosure, never
-    over-rollback). Caller invokes this ONLY on a red baseline that changed files."""
-    after_failing = _failing_nodes(root)
+    over-rollback). Caller invokes this ONLY on a red baseline that changed files.
+
+    FAIL-CLOSED on an invalid re-run: when the re-run collapses before its
+    per-test summary (usage error, nothing collected, timeout), its node set is
+    not comparable — diffing it would read "no regressions" off a run that
+    never measured anything. The session is rolled back and the collapse is
+    disclosed (``backstop_run_invalid``), never silently kept."""
+    run_valid, after_failing = _failing_nodes_checked(root)
+    if not run_valid:
+        _restore_and_zero(report, root, before, after)
+        report.backstop_run_invalid = True
+        return before
     regressed = _regressed_nodes(baseline_failing, after_failing)
     if not regressed:
         return after
@@ -777,6 +815,10 @@ def _render_summary(report: SessionReport) -> list[str]:
                 TIER_VERIFIED: "✅",
                 TIER_WEAK: "⚠️ weak (suite green but uncovered)",
                 TIER_NO_SUITE: "⚠️ no-suite",
+                # A report-only projection: nothing was applied, so it must
+                # never read as an applied tier (least of all "no-suite").
+                TIER_PREVIEW: ("🔍 preview — not applied yet; "
+                               "will be test-verified on --apply"),
             }.get(mv.tier, "⚠️ no-suite")
             lines.append(f"{i}. {mv.description} — {tag}")
     lines += _tier_footnote(report)
@@ -849,13 +891,17 @@ def _nothing_landed_lines(report: SessionReport) -> list[str]:
 def _tier_footnote(report: SessionReport) -> list[str]:
     """Explain the non-verified tiers — ONLY when a move carries one, so a
     fully-verified report stays byte-identical (honesty, not a defect)."""
-    if not (report.weak_moves or report.no_suite_moves):
+    if not (report.weak_moves or report.no_suite_moves or report.preview_moves):
         return []
     note = ["", "Tiers:"]
     if report.weak_moves:
         note.append("- `weak` = applied and the suite is green, but NO test exercises this code, so Apex won't claim it's test-verified; add a test (or `apex shield`) to upgrade it.")
     if report.no_suite_moves:
         note.append("- `no-suite` = applied but no test suite exists to verify this code, so Apex won't claim it's test-verified; add a test (or `apex shield`) to upgrade it.")
+    if report.preview_moves:
+        # A dry run applied NOTHING — the footnote must never claim otherwise
+        # (the old no-suite mislabel said "applied but no test suite exists").
+        note.append("- `preview` = a report-only listing: nothing was applied or written; run with `--apply` to land it test-verified (suite-gated, auto-rollback).")
     return note
 
 

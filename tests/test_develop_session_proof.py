@@ -85,17 +85,22 @@ def _transitive_regression_project(root: Path) -> Path:
 
     ``pkg/check.py`` (``value == None``) is modernizable; its own in-scope test
     passes both before and after, so the impact-scoped gate lets the move LAND.
-    But ``pkg/wrapper.py`` (tested via the WRAPPER, outside scope) feeds a
+    But ``pkg/wrapper.py`` — whose test reaches it only through an exec-string
+    DYNAMIC import, the one linkage the AST scope scan legitimately cannot see
+    even with import-graph reachability (``app.engine.import_reach``) — feeds a
     ``Missing`` sentinel that is GREEN at baseline (``MISSING == None``) and RED
     after (``MISSING is None`` is False) — the transitive regression. A
     pre-existing failing test forces the impact-scoped path. The end-of-session
     backstop catches the regression and rolls the WHOLE session back, emptying
-    ``obj.moves`` (``total_moves == 0``)."""
+    ``obj.moves`` (``total_moves == 0``). ``pkg/__init__.py`` carries a curated
+    empty ``__all__`` so wire-exports leaves it alone — a wired re-export would
+    let the reachability closure pull ``test_wrapper`` into the per-move scope
+    and catch the break before the backstop ever gets to prove itself."""
     (root / "pkg").mkdir(parents=True)
     (root / "tests").mkdir()
     (root / "pyproject.toml").write_text(
         "[project]\nname='pkg'\nversion='0'\n", encoding="utf-8")
-    (root / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "pkg" / "__init__.py").write_text("__all__ = []\n", encoding="utf-8")
     (root / "pkg" / "sentinel.py").write_text(
         "class Missing:\n"
         "    def __eq__(self, other):\n"
@@ -114,10 +119,13 @@ def _transitive_regression_project(root: Path) -> Path:
         "def test_blank_value():\n    assert is_blank(7) is False\n",
         encoding="utf-8")
     (root / "tests" / "test_wrapper.py").write_text(
-        "from pkg.wrapper import blank_via_wrapper\n"
         "from pkg.sentinel import MISSING\n"
+        "def _wrapper():\n"
+        "    ns = {}\n"
+        "    exec('from pkg.wrapper import blank_via_wrapper', ns)\n"
+        "    return ns['blank_via_wrapper']\n"
         "def test_missing_is_blank():\n"
-        "    assert blank_via_wrapper(MISSING) is True\n", encoding="utf-8")
+        "    assert _wrapper()(MISSING) is True\n", encoding="utf-8")
     (root / "tests" / "test_unrelated_red.py").write_text(
         "def test_preexisting_failure():\n    assert 1 == 2\n", encoding="utf-8")
     return root

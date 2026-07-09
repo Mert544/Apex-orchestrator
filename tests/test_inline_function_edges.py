@@ -214,10 +214,12 @@ def test_suggest_inlines_accepts_prebuilt_trees(tmp_path):
 # ── characterization: the one-pass index hoist must not change output ──
 
 def _representative_project(tmp_path):
-    """A multi-module project exercising every suggestion branch: a clean
-    single-use helper, a clean two-call helper, a many-call (over-cap) helper, a
+    """A multi-module project exercising every suggestion branch: clean private
+    single-use and two-call helpers (the only ones that still qualify), an
+    IMPORT-referenced helper and an attribute call site (both extern-refused —
+    the guard the live ``packaging`` dangling-import break added), a
     bare-referenced helper, a recursive helper, a decorated helper, a non-return
-    helper, an attribute call site, and a zero-call helper."""
+    helper, and a zero-call helper."""
     _write(tmp_path, "app/pricing.py",
            "RATE = 3\n"
            "\n"
@@ -234,8 +236,16 @@ def _representative_project(tmp_path):
            "    return x - 1\n"
            "\n"
            "\n"
+           "def _half(x):\n"
+           "    return x // 2\n"
+           "\n"
+           "\n"
+           "def _pad(s):\n"
+           "    return s + ' '\n"
+           "\n"
+           "\n"
            "def quote(n):\n"
-           "    return fee(n)\n")
+           "    return fee(n) + _half(n) + len(_pad('a') + _pad('b'))\n")
     _write(tmp_path, "app/orders.py",
            "from app.pricing import double, fee\n"
            "import app.pricing as pricing\n"
@@ -262,9 +272,12 @@ def _representative_project(tmp_path):
 
 # Pinned, byte-exact expected output of suggest_inlines on the representative
 # project — recomputing the indices in one walk must reproduce this exactly.
+# ``fee`` and ``double`` no longer appear: orders.py imports them by name and
+# calls ``pricing.fee`` attribute-form, so inlining would leave a dangling
+# import + an un-rewritten call site (the live packaging break) — extern-refused.
 _EXPECTED_SUGGESTIONS = [
-    {"module": "app/pricing.py", "function": "fee", "line": 4, "call_sites": 1},
-    {"module": "app/pricing.py", "function": "double", "line": 8, "call_sites": 2},
+    {"module": "app/pricing.py", "function": "_half", "line": 16, "call_sites": 1},
+    {"module": "app/pricing.py", "function": "_pad", "line": 20, "call_sites": 2},
 ]
 
 
@@ -334,9 +347,45 @@ def _pin(tmp_path, files, func):
             dict(sorted(plan.edits_by_file.items())))
 
 
-def test_plan_inline_characterization_multi_site_multi_file(tmp_path):
-    """A cross-file, multi-site, def-and-call-in-same-file plan, pinned exactly.
-    Guards the mechanical decomposition: the produced plan stays byte-identical."""
+def test_plan_inline_characterization_multi_site_same_file(tmp_path):
+    """A same-file, multi-site, def-and-call plan, pinned exactly. Guards the
+    mechanical decomposition: the produced plan stays byte-identical. (The old
+    CROSS-file variant of this pin is now a REFUSAL — see the next test.)"""
+    defined_in, blockers, new_contents, edits = _pin(
+        tmp_path,
+        {
+            "a.py": (
+                "RATE = 2\n"
+                "\n"
+                "def fee(x, rate=RATE):\n"
+                "    return x * rate\n"
+                "\n"
+                "\n"
+                "def total(price):\n"
+                "    return fee(price) + fee(price, 3)\n"
+            ),
+        },
+        "fee",
+    )
+    assert blockers == []
+    assert defined_in == "a.py"
+    assert new_contents["a.py"] == (
+        "RATE = 2\n"
+        "\n"
+        "\n"
+        "def total(price):\n"
+        "    return ((price) * (RATE)) + ((price) * (3))\n"
+    )
+    assert edits == {"a.py": 3}
+
+
+def test_plan_inline_cross_file_import_is_refused(tmp_path):
+    """The OLD pinned cross-file plan deleted ``def fee`` from a.py while
+    KEEPING ``from a import fee`` in b.py — a dangling import (ImportError at
+    the next collection), the exact break the external ``packaging`` run
+    demonstrated live. Pinned now as a refusal with the extern-reference
+    blocker; a sound cross-file inline would first need import cleanup the
+    rewriter does not do."""
     defined_in, blockers, new_contents, edits = _pin(
         tmp_path,
         {
@@ -358,21 +407,14 @@ def test_plan_inline_characterization_multi_site_multi_file(tmp_path):
         },
         "fee",
     )
-    assert blockers == []
     assert defined_in == "a.py"
-    assert new_contents["a.py"] == (
-        "RATE = 2\n"
-        "\n"
-        "\n"
-        "def total(price):\n"
-        "    return ((price) * (RATE)) + ((price) * (3))\n"
-    )
-    assert new_contents["b.py"] == (
-        "from a import fee\n"
-        "\n"
-        "y = ((7) * (4))\n"
-    )
-    assert edits == {"a.py": 3, "b.py": 1}
+    assert blockers == [
+        "'fee' is referenced beyond bare calls (an import statement, an "
+        "__all__ entry, or an attribute-form call) — deleting its definition "
+        "would break those references; not inlining"
+    ]
+    assert new_contents == {}
+    assert edits == {}
 
 
 def test_plan_inline_characterization_blocked_plan(tmp_path):

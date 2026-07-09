@@ -47,6 +47,7 @@ from app.engine.source_roots import source_roots as _source_roots
 # The canonical tree-walk exclusion (VCS, caches, venvs, build output, and
 # Apex's own metadata/`.claude` worktree copies) — shared so the walk below and
 # the mutant-sandbox copytree never drift from every other walker.
+from app.engine.import_reach import reaching_import_names
 from app.engine.skip_dirs import SKIPPED_DIRS as _SKIP_DIRS
 
 # Directories never worth copying into a mutant's throwaway sandbox.
@@ -525,20 +526,32 @@ def _import_targets(project_root: Path, module_rel: str) -> set[str]:
 
 def _is_test_file(rel: str) -> bool:
     """A path is a test file if it lives under ``tests/`` or its filename
-    matches ``test_*.py`` — the same convention pytest discovers by default."""
+    matches ``test_*.py`` / ``*_test.py`` — the same conventions pytest's
+    default ``python_files`` discovers. The suffix form is the COLOCATED
+    layout (``pkg/calc_test.py`` beside ``pkg/calc.py``); missing it dropped
+    every such test from the scoped gate (audit 2026-07-08, finding 11)."""
     p = Path(rel)
     if p.suffix != ".py":
         return False
     if "tests" in p.parts:
         return True
-    return p.name.startswith("test_")
+    return p.name.startswith("test_") or p.name.endswith("_test.py")
 
 
 def _imported_names(tree: ast.Module) -> set[str]:
     """All dotted names referenced by ``import`` / ``from ... import`` in a
     parsed module. For ``from a.b import c`` we record both ``a.b`` (the source
     package) and ``a.b.c`` (the imported member) so either can match a module's
-    dotted path. Relative imports are ignored (no absolute path to match)."""
+    dotted path. Relative imports are ignored (no absolute path to match).
+
+    LITERAL dynamic imports count too (audit 2026-07-08, trust-chain finding
+    5): ``importlib.import_module("pkg.mod")``, ``pytest.importorskip("pkg.mod")``
+    (the standard optional-dependency pattern in real test suites) and
+    ``__import__("pkg.mod")`` name their module in a string constant a static
+    scan can read — missing them dropped genuinely-covering tests from the
+    scope. Only a literal first argument counts; a COMPUTED name is honestly
+    invisible to any deterministic AST scan (the pinned ``exec``-string blind
+    spot stays a disclosed miss)."""
     names: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -550,21 +563,61 @@ def _imported_names(tree: ast.Module) -> set[str]:
             names.add(node.module)
             for alias in node.names:
                 names.add(f"{node.module}.{alias.name}")
+        elif isinstance(node, ast.Call):
+            dynamic = _dynamic_import_arg(node)
+            if dynamic:
+                names.add(dynamic)
     return names
+
+
+# The callable names whose LITERAL first argument is a module path. Both the
+# attribute form (``importlib.import_module`` / ``pytest.importorskip``) and
+# the bare imported form (``from importlib import import_module``) are common.
+_DYNAMIC_IMPORTERS = frozenset({"import_module", "importorskip", "__import__"})
+
+
+def _dynamic_import_arg(node: ast.Call) -> str | None:
+    """The literal dotted module a dynamic-import call pulls in, or ``None``.
+
+    Matches ``__import__(...)`` / ``import_module(...)`` / ``importorskip(...)``
+    by callee name (bare or attribute form) with a string-constant first
+    argument. A relative name (``import_module(".mod", package=...)``) is
+    skipped — it has no absolute path to match."""
+    func = node.func
+    callee = func.id if isinstance(func, ast.Name) else (
+        func.attr if isinstance(func, ast.Attribute) else None)
+    if callee not in _DYNAMIC_IMPORTERS or not node.args:
+        return None
+    first = node.args[0]
+    if (isinstance(first, ast.Constant) and isinstance(first.value, str)
+            and first.value and not first.value.startswith(".")):
+        return first.value
+    return None
 
 
 def covering_test_files(project_root, module_rel: str) -> list[str]:
     """Test files whose source imports the target module — a cheap, coverage-free
-    scope for mutation testing.
+    scope for mutation testing and per-move impact verification.
 
-    "Imports the module" is decided deterministically from each test file's AST:
-    a test covers ``module_rel`` if any of its ``import`` / ``from ... import``
-    statements references the module's dotted path (``app.engine.foo``) or a
-    parent package of it (so ``from app.engine import foo`` and
-    ``import app.engine`` both count). Files that fail to parse are skipped.
+    "Imports the module" is decided deterministically from each test file's AST,
+    and a test covers ``module_rel`` when any of its ``import`` /
+    ``from ... import`` statements would EXECUTE it:
 
-    Returns a sorted, de-duplicated list of test-file paths relative to
-    ``project_root`` (so the result is deterministic across runs).
+    * it names the module's dotted path (``app.engine.foo``) or a parent
+      package of it (``from app.engine import foo`` / ``import app.engine``);
+    * it names a project module that imports the target, directly or
+      transitively (a test importing ``pkg.api`` covers ``pkg/_impl.py`` when
+      ``api`` does ``from pkg._impl import f``) — resolved through the cached
+      project import graph (:mod:`app.engine.import_reach`);
+    * it names ANYTHING under a covered package's prefix — importing
+      ``pkg.sub._x`` executes ``pkg/sub/__init__.py`` on the way, so a change
+      to that ``__init__`` is covered even when ``_x`` is not a parseable
+      project module. (This exact shape produced a fake "verified" on the
+      external ``packaging`` run; the prefix rule is the belt to the graph's
+      suspenders.)
+
+    Files that fail to parse are skipped. Returns a sorted, de-duplicated list
+    of test-file paths relative to ``project_root`` (deterministic across runs).
     """
     root = Path(project_root)
     dotted = _module_dotted_path(module_rel)
@@ -577,6 +630,11 @@ def covering_test_files(project_root, module_rel: str) -> list[str]:
     # (``mylib``, ``mylib.calc`` for ``src/mylib/calc.py``) are ALSO targets, so
     # a test importing ``mylib.calc`` is no longer missed (impact-scoping blind).
     targets = _import_targets(root, module_rel)
+    # ... plus the import-reachability closure: the exact names of every project
+    # module whose import executes the target, and the descendant prefixes of
+    # every covered package __init__ (see the docstring's last two bullets).
+    reached, pkg_prefixes = reaching_import_names(root, module_rel)
+    targets |= reached
 
     matches: set[str] = set()
     for path in root.rglob("*.py"):
@@ -590,9 +648,45 @@ def covering_test_files(project_root, module_rel: str) -> list[str]:
         except (OSError, SyntaxError, ValueError, RecursionError, MemoryError):
             continue
         imported = _imported_names(tree)
-        if imported & targets:
+        if imported & targets or _under_any(imported, pkg_prefixes):
             matches.add(rel)
-    return sorted(matches)
+    return sorted(_expand_conftest_matches(root, matches))
+
+
+def _expand_conftest_matches(root: Path, matches: set[str]) -> set[str]:
+    """Replace a matched ``conftest.py`` with the test files its fixtures serve.
+
+    A ``conftest.py`` that imports the target is a REAL linkage — its fixtures
+    hand the target's objects to every test at or below its directory — but it
+    cannot be RUN: passing it to pytest collects nothing (exit 5), so a scope
+    of ``['tests/conftest.py']`` verifies nothing (audit 2026-07-08, trust-chain
+    finding 2: a false red in absolute mode, a fail-closed rollback in delta).
+    The honest runnable scope is the tests under the conftest's directory
+    (``test_*.py`` / ``*_test.py``, pytest's own conventions) — an over-
+    approximation in the safe direction (fixture-using tests run; unrelated
+    siblings just cost time). A conftest with no tests below it expands to
+    NOTHING, so the caller falls back to the full suite. (A repo-ROOT
+    ``conftest.py`` outside ``tests/`` was never matched as a test file at
+    all — that linkage stays a known, disclosed blind spot.)"""
+    out: set[str] = set()
+    for rel in matches:
+        p = Path(rel)
+        if p.name != "conftest.py":
+            out.add(rel)
+            continue
+        for pattern in ("test_*.py", "*_test.py"):
+            for path in sorted((root / p.parent).rglob(pattern)):
+                if any(part in _SKIP_DIRS for part in path.parts):
+                    continue
+                out.add(path.relative_to(root).as_posix())
+    return out
+
+
+def _under_any(names: set[str], prefixes: tuple[str, ...]) -> bool:
+    """True when any imported name sits strictly under one of the covered
+    package prefixes (each ends with ``.``) — importing a descendant executes
+    the package ``__init__`` on the way."""
+    return any(name.startswith(prefix) for prefix in prefixes for name in names)
 
 
 def _verify_killed(project_root: Path, module_rel: str,
@@ -691,6 +785,35 @@ def render_mutation_markdown(result: MutationResult) -> str:
             "nothing to grade._\n"
         )
 
+    # Honesty guard (never fake a signal): when the baseline is red the
+    # kill/survive split is MEANINGLESS — every mutant trivially "survives" a
+    # suite that was already failing on the UNMUTATED module — so we must NOT
+    # render a grade letter or a "blind spots" list (both would libel the tests
+    # as weak when the measurement never actually ran). Report the void plainly
+    # and name the common cause so the developer can fix the sandbox-hostile
+    # covering test instead of chasing phantom survivors.
+    if not result.baseline_ok:
+        lines = [
+            f"# Test strength: ⚪ **not measured** — {result.module}",
+            "",
+            "_Baseline not green: the covering tests already FAIL on the "
+            "unmutated module inside the sandbox copy, so no mutation score can "
+            "be computed (a red baseline makes every mutant look \"killed\" — a "
+            "false 100% — so Apex refuses to score rather than fake one)._",
+            "",
+            "_Common cause: a covering test reconstructs source via "
+            "`git show HEAD:<path>` (or otherwise needs VCS/network state) and "
+            "errors in the `.git`-less sandbox. Fix or scope out that test, then "
+            "re-run._",
+            "",
+        ]
+        if result.scoped_tests:
+            files = ", ".join(f"`{f}`" for f in result.scoped_tests)
+            lines.append(f"_Covering scope ({len(result.scoped_tests)} file(s), "
+                         f"one of which is red in the sandbox): {files}._")
+            lines.append("")
+        return "\n".join(lines)
+
     letter = test_strength_grade(result.score)
     badge = _GRADE_BADGES.get(letter, "🔴")
     pct = round(result.score * 100, 1)
@@ -716,6 +839,16 @@ def render_mutation_markdown(result: MutationResult) -> str:
         lines.append("_No covering test imports this module — ran the full "
                      "suite._")
     lines.append("")
+
+    # Partial-scan honesty: a budget-truncated run examined only ``total``
+    # mutants, so "no survivors" means "none among those examined" — NOT "module
+    # clean". Say so, or the reader over-reads an incomplete scan as a pass.
+    if result.budget_exhausted:
+        lines.append("_⚠ Budget exhausted: only the "
+                     f"{result.total} examined mutant(s) were scored; the rest "
+                     "were left unvisited this run, so this is a partial reading, "
+                     "not a full one._")
+        lines.append("")
 
     # Where to look: the survivors are the blind spots. List them
     # ``file:line — operator`` in document order (survivors are already ordered).

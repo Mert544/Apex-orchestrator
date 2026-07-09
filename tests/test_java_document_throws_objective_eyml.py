@@ -855,6 +855,8 @@ def test_north_star_and_soundness_audits_pass():
 # --- behaviour-identical landing on the java_undocumented_throws corpus shape --
 
 @_needs_jdk
+@pytest.mark.timeout(600)  # heavy JVM corpus sweep: 120s global fits fast
+# tests, not a javac/JVM cold-start under -j4 gate CPU contention (no assertion changed)
 def test_behavior_identical_on_java_undocumented_throws_corpus_shape():
     # The standing soundness corpus carries a Java undocumented-throws LANDABLE shape:
     # a method declaring a `throws` clause with no Javadoc. java-document-throws SHOULD

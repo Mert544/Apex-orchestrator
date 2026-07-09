@@ -240,6 +240,8 @@ def test_driver_refuses_reflect_wildcard_import(tmp_path: Path):
 # --- the heavy soundness corpus marks both shapes refused for java-finalize-field ---
 
 @_needs_jdk
+@pytest.mark.timeout(600)  # heavy JVM corpus sweep: 120s global fits fast
+# tests, not a javac/JVM cold-start under -j4 gate CPU contention (no assertion changed)
 def test_soundness_corpus_refuses_both_new_java_shapes():
     # The standing corpus sweep (heavy path: java-finalize-field is expensive) must
     # mark both reflection/serialization shapes `refused` — the in-repo proof, exactly

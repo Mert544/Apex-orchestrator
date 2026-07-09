@@ -1015,6 +1015,52 @@ def test_render_mutation_markdown_empty_total_is_clean():
     assert "**F**" not in md
 
 
+def test_render_mutation_markdown_baseline_red_does_not_fake_a_grade():
+    # THE HONESTY BUG this fixes: when the covering suite is already RED on the
+    # unmutated module inside the sandbox (baseline_ok=False), mutation_score
+    # returns killed=0 / survived=all with baseline_ok=False. The render MUST NOT
+    # present that as a real "F, 0% score, N blind spots the tests don't catch" —
+    # the tests are NOT blind; the measurement never ran. (Real-world trigger: a
+    # covering test reconstructs source via `git show HEAD:` and errors in the
+    # `.git`-less sandbox copy.)
+    survivor = Mutant(module="app/foo.py", line=29, operator="return:value>None",
+                      original="asdict(self)", mutated="None")
+    result = MutationResult(
+        module="app/foo.py", total=6, killed=0, survived=6, score=0.0,
+        survivors=[survivor], scoped_tests=["tests/test_foo_byteident.py"],
+        baseline_ok=False,
+    )
+    md = render_mutation_markdown(result)
+    # It must say the score was NOT measured, not stamp a failing grade.
+    assert "not measured" in md
+    assert "Baseline not green" in md
+    # It must NOT fabricate a letter grade or a blind-spots verdict.
+    assert "**F**" not in md
+    assert "Blind spots" not in md
+    assert "Mutation score" not in md
+    # It must NOT libel the tests by listing the phantom "survivor" as a blind spot.
+    assert "return:value>None" not in md
+    # It should still name the covering scope so the offending test is findable,
+    # and point at the common cause.
+    assert "tests/test_foo_byteident.py" in md
+    assert "git show HEAD" in md
+
+
+def test_render_mutation_markdown_flags_budget_truncated_scan():
+    # A budget-exhausted scan examined only a SUBSET of mutants, so "no survivors"
+    # means "none among those examined" — not "module clean". The render must say
+    # so instead of letting an incomplete scan read as a full pass.
+    result = MutationResult(
+        module="app/foo.py", total=2, killed=2, survived=0, score=1.0,
+        survivors=[], scoped_tests=["tests/test_foo.py"], budget_exhausted=True,
+    )
+    md = render_mutation_markdown(result)
+    assert "Budget exhausted" in md
+    assert "partial" in md
+    # The examined-set score is still shown honestly (2/2 of what ran).
+    assert "| Total seeded | 2 |" in md
+
+
 def test_cmd_mutants_renders_grade(tmp_path, capsys):
     # A strong covering suite scores 100% -> grade A+ in the rendered output.
     test_src = (

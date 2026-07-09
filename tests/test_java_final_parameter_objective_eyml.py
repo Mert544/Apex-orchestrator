@@ -589,6 +589,8 @@ def test_north_star_and_soundness_audits_pass():
 
 # --- must-refuse on the Java soundness-corpus fixture (the reassigned-param trap) --
 
+@pytest.mark.timeout(600)  # heavy JVM corpus sweep: 120s global fits fast
+# tests, not a javac/JVM cold-start under -j4 gate CPU contention (no assertion changed)
 def test_refuses_on_java_reassigned_param_corpus_shape():
     # The standing soundness corpus carries a Java reassigned-parameter trap shape: a
     # declared parameter reassigned by a plain `=` in its own method body (so `final`

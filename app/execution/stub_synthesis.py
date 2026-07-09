@@ -37,9 +37,11 @@ from __future__ import annotations
 
 import ast
 import doctest
+import os
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 from app.skills.execution.run_tests import RunTestsSkill
@@ -5068,11 +5070,15 @@ def _expr_matches_all(expr: str, stub: StubFunction,
     helper a strict, no-guess check."""
     if "__apex_self__" in expr:
         return False
-    env_globals = {"__builtins__": _SAFE_BUILTINS}
     for args, expected in witnesses:
-        local = dict(zip(stub.params, args))
+        # Params go in GLOBALS, not locals: a comprehension/generator body runs in
+        # an implicit nested scope that can see globals but NOT the enclosing
+        # eval's locals, so a param used inside `[a + x for x in b]` would raise
+        # NameError from a locals dict. Byte-identical for a plain expression
+        # (`a + b` resolves the same either way); it only unbreaks comprehensions.
+        env_globals = {"__builtins__": _SAFE_BUILTINS, **dict(zip(stub.params, args))}
         try:
-            value = eval(expr, env_globals, local)  # nosec B307 - fixed templates only
+            value = eval(expr, env_globals, {})  # nosec B307 - fixed templates only
         except Exception:
             return False
         if type(value) is not type(expected) or value != expected:
@@ -5174,6 +5180,17 @@ def _matching_shapes(root: Path, test_files: list[str], stub: StubFunction,
     seen_shapes: set[str] = set()
     for label, expr in _ordered_candidates(root, test_files, stub, module_source):
         if label == "constant" or "__apex_self__" in expr:
+            continue
+        # Opt-in native-mind PROPOSALS never feed the ambiguity refuse-floor: they
+        # are gated in the landing loop only. Counting them here would let a body
+        # learned from the project's own code coincidentally match a thin contract,
+        # add a competing "shape", and flip an otherwise-unambiguous stub to
+        # refused — SUPPRESSING a template body that already landed with the lane
+        # off. Templates always precede native in the landing loop, so a template
+        # still wins when unambiguous and native only fills a genuine gap; excluding
+        # native here keeps the ambiguity floor byte-identical to the lane-off case
+        # (the lane stays strictly additive) without weakening template protection.
+        if label.startswith("native-mind:"):
             continue
         if not _expr_matches_all(expr, stub, evaluable):
             continue
@@ -5795,18 +5812,101 @@ def fill_stub_body(source: str, stub: StubFunction, return_expr: str) -> str | N
     return _rewrite_with_body(source, stub, return_expr)
 
 
+def _native_mind_enabled() -> bool:
+    """True when the OPT-IN native-mind candidate source is enabled via the
+    ``APEX_NATIVE_MIND`` environment variable (``1``/``true``/``yes``/``on``,
+    case-insensitive). Default OFF: with it unset, ``_ordered_candidates`` never
+    touches the native intelligence and its output is BYTE-IDENTICAL to the
+    zero-token template core — the amended-North-Star invariant (an opt-in lane
+    that, disabled, changes nothing)."""
+    return os.environ.get("APEX_NATIVE_MIND", "").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
+@lru_cache(maxsize=8)
+def _native_mind_sources(root_str: str) -> tuple[str, ...]:
+    """The project's own module sources (deterministically ordered), read ONCE per
+    root — the corpus the native intelligence mines for candidate bodies.
+
+    Skips test/example/fixture/hidden/virtualenv trees (their bodies are
+    boilerplate, not project logic) so a learned exemplar comes only from real
+    library code. Cached (this is called per candidate scan and implement-stub is
+    an expensive, explicit objective); a stale cache across an in-run edit is
+    harmless because every mined body is still gated before it lands. Only ever
+    reached on the opt-in path, so the default run reads nothing extra."""
+    root = Path(root_str)
+    skip = ("tests/", "test/", "examples/", "example/", "fixtures/", ".venv/",
+            "venv/", ".git/", "build/", "dist/", "node_modules/")
+    sources: list[str] = []
+    for path in sorted(root.rglob("*.py")):
+        rel = path.relative_to(root).as_posix()
+        low = rel.lower()
+        name = path.name.lower()
+        if any(low.startswith(s) or f"/{s}" in f"/{low}" for s in skip):
+            continue
+        if name.startswith("test_") or name.endswith("_test.py"):
+            continue
+        try:
+            sources.append(path.read_text(encoding="utf-8", errors="ignore"))
+        except OSError:
+            continue
+    return tuple(sources)
+
+
+def _native_mind_candidates(root: Path,
+                            stub: StubFunction) -> list[tuple[str, str]]:
+    """The native intelligence's ``(label, expr)`` proposals for ``stub``, learned
+    from the project's OWN functions and adapted to the stub's params — or an empty
+    list when the lane is disabled. A lazy import keeps the disabled path free of
+    even importing the native module. Every candidate is a PROPOSAL: the caller
+    still gates each one against the stub's pinned tests / doctests, so nothing
+    lands unverified.
+
+    Ordered corpus-frequency first (the dominant idiom), THEN re-ranked by
+    EXPERIENCE: a shape the native lane has actually landed here before — recency-
+    weighted and version-bounded (:mod:`app.engine.native_proof_memory`) — is tried
+    first, so proven idioms win over merely-common ones. With no experience yet the
+    order is unchanged (frequency), and re-ranking never changes WHAT can land
+    (the gate still decides) — only the order candidates are tried in.
+    Deterministic: a stable sort on a rounded score keeps the frequency order for
+    equal-experience shapes."""
+    if not _native_mind_enabled():
+        return []
+    from app.engine.native_proof_memory import decayed_reliability
+    from app.engine.native_synth import canonical_shape, mind_candidate_exprs
+
+    sources = list(_native_mind_sources(str(root)))
+    candidates = mind_candidate_exprs(sources, stub.params)
+    reliability = decayed_reliability(root)
+    if not reliability:
+        return candidates  # no experience yet — frequency order, unchanged
+    return sorted(candidates, key=lambda item: -reliability.get(
+        canonical_shape(stub.params, item[1]), 0.0))
+
+
 def _ordered_candidates(root: Path, test_files: list[str],
                         stub: StubFunction,
                         module_source: str | None = None) -> list[tuple[str, str]]:
     """The full fixed-order candidate list: the parameter-shaped templates FIRST,
-    then a constant-return as the LAST resort (and only when ``_expected_constant``
-    is satisfied — at least two distinct argument tuples agree on one literal).
+    then (only when the opt-in native-mind lane is enabled) the project-learned
+    native candidates, then a constant-return as the LAST resort (and only when
+    ``_expected_constant`` is satisfied — at least two distinct argument tuples
+    agree on one literal).
 
     Constant goes last so a parameter-shaped body that ALSO passes the pinned
     tests WINS over a bare literal: ``add(3, 4) == 7`` lands ``a + b`` (intent),
     not ``return 7`` (overfit). A constant only fires when no parameter template
     fits AND the literal is witnessed by >=2 distinct inputs (or the function
     takes no args).
+
+    The native-mind candidates (opt-in, ``APEX_NATIVE_MIND``) sit BETWEEN the
+    fixed templates and the constant: a body learned from the project's own proven
+    functions is more intent-bearing than a bare literal, but a fixed template
+    still takes priority. They are de-duplicated against the templates already
+    offered (a learned body a template already proposes adds nothing) and, like
+    every other candidate, gated against the pinned tests before anything lands —
+    so with the lane disabled the output is byte-identical to the template core,
+    and with it enabled nothing lands unverified.
 
     Value-dependent templates (``n * k``, ``s.replace(a, b)``) are seeded from the
     witnesses parsed from the pinned tests; they only PROPOSE bodies — every one
@@ -5817,6 +5917,11 @@ def _ordered_candidates(root: Path, test_files: list[str],
     constant-return is an honest under-claim, never landed unverified)."""
     witnesses = _function_witnesses(root, test_files, stub, module_source)
     out: list[tuple[str, str]] = list(candidate_bodies(stub, witnesses))
+    seen_exprs = {expr for _label, expr in out}
+    for label, expr in _native_mind_candidates(root, stub):
+        if expr not in seen_exprs:
+            seen_exprs.add(expr)
+            out.append((label, expr))
     const = _expected_constant(root, test_files, stub)
     if const is not None:
         out.append(("constant", const))

@@ -30,7 +30,9 @@ def test_memory_card_renders_when_a_store_is_present(tmp_path):
     html = _memory_vault_section(str(tmp_path))
     assert "Memory — vault stores" in html
     assert "stores present" in html
-    assert "/7" in html  # the 7-store roll-up
+    # CONSCIOUS PIN MOVE: 7 -> 8-store roll-up (the derived "manifesto" section
+    # joined the vault; see tests/test_vault_manifesto_eyml.py for its contract).
+    assert "/8" in html  # the 8-store roll-up
 
 
 def test_memory_card_empty_on_fresh_project(tmp_path):

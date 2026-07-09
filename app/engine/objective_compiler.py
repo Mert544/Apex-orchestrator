@@ -40,9 +40,19 @@ __all__ = [
     "bool_return_fitness", "magic_constant_fitness",
     "compile_objective", "compile_all", "run_moves", "available_objectives",
     "ALL_OBJECTIVES", "SESSION_OBJECTIVES",
+    "BACKSTOP_CLEAN", "BACKSTOP_INVALID", "BACKSTOP_REGRESSED",
     "render_compile_markdown", "render_from_dream_markdown", "render_all_markdown",
     "resolve_objective", "objective_synonyms",
 ]
+
+
+# The END-OF-CAMPAIGN regression-backstop verdicts a STANDALONE gated apply can
+# carry on ``CompileResult.regression_backstop`` (empty string = the backstop
+# did not run: dry run, --no-verify, suite-less project, a caller-owned
+# baseline — the develop session — or a campaign that changed nothing).
+BACKSTOP_CLEAN = "clean"                        # re-run comparable; no baseline-green test regressed
+BACKSTOP_REGRESSED = "regression-rolled-back"   # a baseline-green test regressed; every changed file restored
+BACKSTOP_INVALID = "invalid-run-rolled-back"    # the re-run collapsed; fail CLOSED — every changed file restored
 
 
 @dataclass
@@ -161,6 +171,29 @@ class CompileResult:
     # ``to_dict()`` is byte-identical there (mirrors ``withheld``/``committed``).
     verification_unavailable: str = ""
     pytest_interpreter: str = ""
+    # LEARNED-AVOID (opt-in, ``avoid_aware``): one human description per move
+    # target this campaign SKIPPED because the SAME counterfactual avoid-guard the
+    # maintain path's closed loop consults (``idea_action_bridge._learned_skip``)
+    # flagged its ``(operator, module)`` signature as predictably rollback-prone —
+    # saving a wasted apply+rollback. Reported ONCE per target (never re-announced
+    # on a later pass). Empty for every run that did not arm ``avoid_aware`` (the
+    # default), so ``to_dict()`` stays byte-identical (mirrors ``withheld``).
+    avoided: list[str] = field(default_factory=list)
+    # END-OF-CAMPAIGN regression-BACKSTOP verdict (see the ``BACKSTOP_*``
+    # constants). A STANDALONE gated apply (``apply and verify`` with NO
+    # caller-supplied ``baseline_failing`` — the develop session supplies one and
+    # runs its OWN end-of-session backstop) re-runs the suite ONCE after the
+    # campaign and diffs failing nodes at test-function granularity against the
+    # up-front baseline: a baseline-green test now red rolls the WHOLE campaign
+    # back (every changed file restored, ``steps`` emptied — no phantom
+    # contributions); a collapsed re-run fails CLOSED the same way. ``""`` (the
+    # default) = the backstop did not run, so every existing construction stays
+    # valid and a dry / --no-verify / suite-less / session-driven campaign's
+    # ``to_dict()`` is byte-identical (mirrors ``withheld``/``avoided``).
+    regression_backstop: str = ""
+    # The sorted node ids that were GREEN at baseline but RED after the campaign
+    # — the evidence behind a ``BACKSTOP_REGRESSED`` verdict. Empty otherwise.
+    backstop_regressed_nodes: list[str] = field(default_factory=list)
 
     @property
     def improved(self) -> bool:
@@ -182,6 +215,11 @@ class CompileResult:
         # campaign that didn't arm the gate (mirrors how ``value`` is additive).
         if self.withheld:
             d["withheld"] = list(self.withheld)
+        # Purely ADDITIVE: appears only when the avoid-aware guard actually
+        # skipped a move (see ``avoided`` docstring above), so a campaign that
+        # never armed it is byte-identical (mirrors ``withheld``).
+        if self.avoided:
+            d["avoided"] = list(self.avoided)
         # Purely ADDITIVE: appears only when a caller actually committed the
         # result (see ``committed``/``commit_hash`` docstring above).
         if self.committed:
@@ -193,6 +231,13 @@ class CompileResult:
         if self.verification_unavailable:
             d["verification_unavailable"] = self.verification_unavailable
             d["pytest_interpreter"] = self.pytest_interpreter
+        # Purely ADDITIVE: appears only when the end-of-campaign regression
+        # backstop actually RAN (a standalone gated apply that changed files on a
+        # suite-carrying project), so every other campaign is byte-identical.
+        if self.regression_backstop:
+            d["regression_backstop"] = self.regression_backstop
+            if self.backstop_regressed_nodes:
+                d["backstop_regressed_nodes"] = list(self.backstop_regressed_nodes)
         return d
 
 
@@ -987,12 +1032,96 @@ def _resolve_compile_target(
         blocked=[f"unknown objective '{objective}' (known: {known})"])
 
 
+def _risk_ordered(moves: list[Move], root: str | Path) -> list[Move]:
+    """Stable ascending-``fix_risk`` reorder — the SAME learned-risk nervous signal
+    the maintain path (``idea_action_bridge._risk_ordered``) already acts on, now
+    available to the develop loop: a move whose ``(action, module)`` has
+    historically rolled back is tried LATER, saving a wasted apply+rollback.
+
+    Best-effort at the edge: any failure leaves the order untouched. With NO proof
+    history every move scores the neutral ``0.5`` (``fix_risk``'s baseline), so a
+    stable sort is a no-op — a fresh project is byte-identical even with the signal
+    on. This closes the sense→decide loop for BOTH motor pathways symmetrically."""
+    try:
+        from app.engine.fix_risk_model import fix_risk
+
+        return sorted(moves, key=lambda m: fix_risk(root, m.operator, _move_module(m)))
+    except Exception:
+        return moves
+
+
+def _avoid_flagged_targets(moves: list[Move], root: str | Path) -> set[str]:
+    """The target of every move whose ``(operator, module)`` signature the
+    counterfactual avoid-guard flags as predictably rollback-prone.
+
+    The SAME evidence-backed signal the maintain path's closed loop already acts
+    on (:func:`app.engine.idea_action_bridge.IdeaActionBridge._learned_skip`, via
+    :func:`app.engine.counterfactual_learning.should_avoid` over
+    ``failure_signatures``) — mirrored here rather than reinvented.
+
+    Best-effort at the edge, exactly like :func:`_risk_ordered`: any failure
+    (missing/unreadable proof history) returns an empty set rather than raising.
+    An empty/missing history flags nothing — honest: no evidence, no skip — so a
+    fresh project is unaffected even with the guard armed."""
+    try:
+        from app.engine.counterfactual_learning import (
+            failure_signatures,
+            module_traits,
+            should_avoid,
+        )
+        from app.engine.proof_history import load_proof_history
+
+        signatures = failure_signatures(load_proof_history(root))
+        if not signatures:
+            return set()
+        return {
+            mv.target for mv in moves
+            if should_avoid(signatures, mv.operator, module_traits(_move_module(mv)))
+        }
+    except Exception:
+        return set()
+
+
+def _initial_skip_targets(covered_only: bool, avoid_aware: bool) -> set | None:
+    """The campaign's initial ``skip_targets`` channel (see ``_apply_one_move``):
+    an empty, armed set when EITHER the covered-only sweep or the avoid-aware
+    guard needs it, else ``None`` — the historical no-op that keeps the skip
+    check inert, so a plain campaign's apply loop stays byte-identical."""
+    return set() if (covered_only or avoid_aware) else None
+
+
+def _arm_avoid_skip(result: CompileResult, skip_targets: set | None,
+                    moves: list[Move], root: str, avoid_aware: bool) -> None:
+    """OPT-IN (``avoid_aware``): pre-populate ``skip_targets`` with this pass's
+    avoid-flagged move targets, so ``_apply_one_move``'s EXISTING skip check
+    (untouched — see its ``skip_targets`` gate) declines them before ever
+    building a plan or touching the suite. Reuses the covered-only skip channel
+    rather than adding a parallel one.
+
+    Each NEWLY-flagged target is recorded once on ``result.avoided`` (a target
+    already in ``skip_targets`` from an earlier pass — avoid-flagged or
+    covered-only-withheld — is never re-announced), mirroring how a covered-only
+    withhold is reported once then silently re-skipped.
+
+    No-op when ``avoid_aware`` is off (the default) or ``skip_targets`` is
+    ``None`` (unarmed), so a default campaign is byte-identical."""
+    if not avoid_aware or skip_targets is None:
+        return
+    new = _avoid_flagged_targets(moves, root) - skip_targets
+    for target in sorted(new):
+        result.avoided.append(
+            f"{target}: skipped — learned-avoid (proof-of-fix history predicts "
+            f"rollback)")
+    skip_targets.update(new)
+
+
 def _ordered_candidates(generate: Callable[[str | Path], list[Move]], root: str,
                         scope_module: str | None, memory: Any,
                         last_operator: str, value_aware: bool = False,
                         centrality: dict[str, int] | None = None,
                         realization: dict[str, float] | None = None,
-                        js_centrality: dict[str, int] | None = None) -> list[Move]:
+                        js_centrality: dict[str, int] | None = None,
+                        risk_aware: bool = False) -> list[Move]:
     """The candidate moves for one scan, scoped and ordered.
 
     Generates the objective's moves against the CURRENT tree, confines them to
@@ -1052,6 +1181,12 @@ def _ordered_candidates(generate: Callable[[str | Path], list[Move]], root: str,
     elif last_operator:
         moves = sorted(
             moves, key=lambda m: -memory.sequence_factor(last_operator, m.operator))
+    if risk_aware:
+        # A final STABLE ascending-risk pass: learned rollback-risk becomes the
+        # primary order (safety first, mirroring the maintain path), and the
+        # value/sequence order above breaks ties. Opt-in and a no-op without proof
+        # history, so a default campaign stays byte-identical.
+        moves = _risk_ordered(moves, root)
     return moves
 
 
@@ -1141,6 +1276,7 @@ def _apply_one_move(result: CompileResult, mv: Move, root: str, current: float,
         if res.get("reason"):
             result.blocked.append(f"{mv.target}: {res['reason']}")
         return False, current
+    _record_native_experience(root, plan, res)
     nxt = max(0.0, current - 1)
     value = 0.0
     if value_aware:
@@ -1155,6 +1291,22 @@ def _apply_one_move(result: CompileResult, mv: Move, root: str, current: float,
     return True, nxt
 
 
+def _record_native_experience(root: str, plan: Any, res: dict) -> None:
+    """Remember any native-only idiom shapes a VERIFIED apply landed, so the native
+    lane ranks a proven idiom first next time. Gated on ``verified is True`` (not
+    merely ``applied``) so experience reflects only suite-proven landings — a
+    verification-unavailable / no-suite apply keeps its change but earns no
+    experience. Called ONLY after a real applied move (never a dry-run/rollback);
+    a no-op for a plan that landed no native-only body."""
+    if res.get("verified") is not True:
+        return
+    shapes = getattr(plan, "native_shapes", None)
+    if not shapes:
+        return
+    from app.engine.native_proof_memory import record_native_landing
+    record_native_landing(root, shapes)
+
+
 def _run_pass(result: CompileResult, moves: list[Move], root: str, current: float,
               max_steps: int, verify: bool, scope_verify: bool,
               last_operator: str, memory: Any = None, value_aware: bool = False,
@@ -1163,6 +1315,7 @@ def _run_pass(result: CompileResult, moves: list[Move], root: str, current: floa
               skip_targets: set | None = None,
               baseline_failing: frozenset[str] | None = None,
               realization: dict[str, float] | None = None,
+              avoid_aware: bool = False,
               ) -> tuple[bool, float, str]:
     """Apply every move in one pass's scan that still lands, in order.
 
@@ -1187,7 +1340,13 @@ def _run_pass(result: CompileResult, moves: list[Move], root: str, current: floa
 
     ``realization`` (see :func:`_ordered_candidates`) is forwarded to
     ``_apply_one_move`` so a landed step's disclosed value reflects the operator's
-    PROVEN track record. ``None`` (the default) ⇒ byte-identical to today."""
+    PROVEN track record. ``None`` (the default) ⇒ byte-identical to today.
+
+    AVOID-AWARE (opt-in): before this pass's moves are attempted, arms
+    ``skip_targets`` with any move the counterfactual avoid-guard flags (see
+    :func:`_arm_avoid_skip`) — the develop-loop sibling of the maintain path's
+    closed loop. Default off ⇒ byte-identical to today."""
+    _arm_avoid_skip(result, skip_targets, moves, root, avoid_aware)
     progressed = False
     for mv in moves:
         if len(result.steps) >= max_steps:
@@ -1253,6 +1412,130 @@ def _campaign_baseline(root: str, apply: bool, verify: bool,
 
     _available, failing = suite_failing_nodes(Path(root))
     return failing or None
+
+
+@dataclass
+class _BackstopState:
+    """What the end-of-campaign regression backstop captured UP FRONT: the
+    baseline failing-node set (the pre-existing reds it must tolerate) and the
+    byte snapshot of every own ``.py`` file (the restore target on a rollback)."""
+    baseline_failing: frozenset[str]
+    before: dict[str, str]
+
+
+def _arm_backstop(root: str) -> _BackstopState | None:
+    """Arm the END-OF-CAMPAIGN regression backstop for a STANDALONE gated apply.
+
+    Called ONLY on the ``apply and verify`` path with no caller-supplied
+    baseline (see :func:`_campaign_baseline_and_backstop`). Probes the suite
+    ONCE (:func:`~app.execution._apply_verify.suite_failing_nodes` — the same
+    probe :func:`_campaign_baseline` paid, so the campaign still pays exactly one
+    baseline run) and snapshots the tree byte-for-byte via the shared LEAF
+    :func:`app.engine.tree_snapshot.snapshot_py_tree` (the develop session's own
+    capture, extracted so both backstops restore identically). Returns ``None``
+    when NO suite is detectable — there is no baseline to diff, and the honest
+    ``no-suite`` tier already carries that disclosure. Deterministic: one sorted
+    probe + one sorted walk, no clock/random."""
+    from app.engine.tree_snapshot import snapshot_py_tree
+    from app.execution._apply_verify import suite_failing_nodes
+
+    available, failing = suite_failing_nodes(Path(root))
+    if not available:
+        return None
+    return _BackstopState(baseline_failing=failing,
+                          before=snapshot_py_tree(Path(root)))
+
+
+def _campaign_baseline_and_backstop(
+    root: str, apply: bool, verify: bool,
+    baseline_failing: frozenset[str] | None,
+) -> tuple[frozenset[str] | None, _BackstopState | None]:
+    """``(gate_baseline, backstop_state)`` — at most ONE suite probe.
+
+    The gate baseline is byte-identical to :func:`_campaign_baseline` in every
+    case (a caller-supplied set is honored verbatim; a gated apply probes once;
+    a dry / ``--no-verify`` run never gates). The backstop is armed ONLY for the
+    STANDALONE gated apply (``apply and verify`` with ``baseline_failing is
+    None``): a caller that supplied its baseline — the develop session — owns
+    its OWN end-of-session backstop, so arming a second one here would double
+    the suite runs and split the rollback authority. The standalone probe is
+    SHARED between the gate and the backstop, so no second baseline run is ever
+    paid."""
+    if baseline_failing is not None or not (apply and verify):
+        return _campaign_baseline(root, apply, verify, baseline_failing), None
+    backstop = _arm_backstop(root)
+    if backstop is None:
+        # No detectable suite: the gate baseline is None (nothing was failing —
+        # nothing ran), exactly what _campaign_baseline's probe returned before.
+        return None, None
+    return (backstop.baseline_failing or None), backstop
+
+
+def _backstop_restore(result: CompileResult, root: str,
+                      backstop: _BackstopState, after: dict[str, str],
+                      verdict: str, reason: str) -> None:
+    """Roll the WHOLE campaign back to its pre-campaign bytes and record why.
+
+    Restores every changed file (deletes created ones) via the shared LEAF
+    :func:`app.engine.tree_snapshot.restore_py_tree`, stamps the verdict, empties
+    ``steps`` (the tree is back at baseline — reporting landed moves would be
+    phantom contributions, mirroring the session's ``_restore_and_zero``), resets
+    ``fitness_end`` (no debt was actually cleared), and appends a rollback-shaped
+    ``blocked`` reason (the word "restored" is what chain/goal consumers key
+    their red-halt detection off — see ``chain_compiler._step_is_red``)."""
+    from app.engine.tree_snapshot import restore_py_tree
+
+    restore_py_tree(Path(root), backstop.before, after)
+    result.regression_backstop = verdict
+    result.steps.clear()
+    result.fitness_end = result.fitness_start
+    result.blocked.append(reason)
+
+
+def _finish_regression_backstop(result: CompileResult, root: str,
+                                backstop: _BackstopState | None) -> None:
+    """The END-OF-CAMPAIGN transitive-regression backstop (standalone applies).
+
+    The per-move gate already ran, but an impact-SCOPED gate (``--fast`` / a
+    spec-flagged objective like implement-stub) is blind to a previously-GREEN
+    test reachable only TRANSITIVELY — a behaviour-changing transform can break
+    it and the move lands unnoticed, and (pre-fix) NOTHING ever re-checked a
+    standalone campaign. So: if files changed, re-run the suite ONCE, diff its
+    failing nodes against the up-front baseline at TEST-FUNCTION granularity
+    (:func:`~app.execution._apply_verify.regressed_functions` — a pre-existing
+    red is tolerated, never charged), and restore EVERY changed file on a
+    regression. FAIL-CLOSED on a collapsed re-run (``suite_failing_nodes_checked``
+    invalid): its empty node set measured nothing, so it must never read as "no
+    regressions" — the campaign is restored and the collapse disclosed. No-op
+    when the backstop was never armed or nothing landed, so every other path is
+    byte-identical."""
+    if backstop is None or not result.steps:
+        return
+    from app.engine.tree_snapshot import snapshot_py_tree
+    from app.execution._apply_verify import (
+        regressed_functions,
+        suite_failing_nodes_checked,
+    )
+
+    after = snapshot_py_tree(Path(root))
+    if after == backstop.before:
+        return  # nothing changed on disk — nothing to re-verify
+    _available, run_valid, after_failing = suite_failing_nodes_checked(Path(root))
+    if not run_valid:
+        _backstop_restore(
+            result, root, backstop, after, BACKSTOP_INVALID,
+            "end-of-campaign backstop: the verification re-run collapsed before "
+            "any per-test result; files restored (fail closed)")
+        return
+    regressed = regressed_functions(backstop.baseline_failing, after_failing)
+    if not regressed:
+        result.regression_backstop = BACKSTOP_CLEAN
+        return
+    _backstop_restore(
+        result, root, backstop, after, BACKSTOP_REGRESSED,
+        "end-of-campaign backstop: a previously-GREEN test regressed after the "
+        "campaign; files restored")
+    result.backstop_regressed_nodes = sorted(regressed)
 
 
 def _value_aware_signals(
@@ -1339,6 +1622,8 @@ def compile_objective(project_root: str | Path, objective: str = "dead-params",
                       min_move_value: float = 0.0,
                       covered_only: bool = False,
                       baseline_failing: frozenset[str] | None = None,
+                      risk_aware: bool = False,
+                      avoid_aware: bool = False,
                       ) -> CompileResult:
     """Greedily compose verified moves toward ``objective``.
 
@@ -1380,7 +1665,29 @@ def compile_objective(project_root: str | Path, objective: str = "dead-params",
     set in to avoid a second probe; an EMPTY set means a proven-GREEN baseline, so
     the gate stays absolute-green and the run is byte-identical. A fully-green
     baseline (the common case, and Apex's own suite) captures an empty set ⇒
-    absolute-green ⇒ unchanged."""
+    absolute-green ⇒ unchanged.
+
+    ``avoid_aware`` (DEFAULT False = byte-identical to today) is the develop
+    loop's sibling of the maintain path's closed loop
+    (``idea_action_bridge._learned_skip``): a move whose ``(operator, module)``
+    signature the counterfactual avoid-guard (``counterfactual_learning.
+    should_avoid`` over ``failure_signatures``) flags as predictably rollback-
+    prone is SKIPPED — never even plan-built — before it can waste an
+    apply+rollback, and recorded once on ``result.avoided``. Distinct from
+    ``risk_aware`` (which only REORDERS moves, low-risk first, and never drops
+    one): the two compose freely — risk-aware still tries every move, just in a
+    safer order, while avoid-aware refuses the ones with strong rollback
+    evidence outright. An empty/missing proof history flags nothing, so a fresh
+    project's campaign is unaffected even with the guard armed.
+
+    END-OF-CAMPAIGN REGRESSION BACKSTOP: a STANDALONE gated apply (``apply and
+    verify`` with no caller-supplied ``baseline_failing``) re-runs the suite
+    ONCE after the campaign and rolls EVERYTHING back if a baseline-GREEN test
+    regressed — the transitive hole an impact-scoped per-move gate cannot see
+    (see :func:`_finish_regression_backstop`; the verdict is disclosed on
+    ``result.regression_backstop``). A caller that supplied its baseline (the
+    develop session) runs its own end-of-session backstop, so this one stands
+    down there — never two rollback authorities over one tree."""
     objectives = _objectives_map()
     objective_name, blocked = _resolve_compile_target(objective, objectives)
     if objective_name is None:
@@ -1433,7 +1740,7 @@ def compile_objective(project_root: str | Path, objective: str = "dead-params",
     def candidates() -> list[Move]:
         return _ordered_candidates(generate, root, scope_module, memory,
                                    last_operator, value_aware, move_centrality,
-                                   realization, js_centrality)
+                                   realization, js_centrality, risk_aware)
 
     def measure() -> float:
         # Scoped runs measure the local debt (remaining scoped moves); a global
@@ -1462,11 +1769,16 @@ def compile_objective(project_root: str | Path, objective: str = "dead-params",
     # honored from the caller) and threaded to every move's gate, so a correct move
     # lands on a project red on checkout while a true regression is still rolled
     # back. None on a green baseline / dry run ⇒ absolute-green, byte-identical.
-    campaign_baseline = _campaign_baseline(root, apply, verify, baseline_failing)
-    # COVERED-ONLY: the per-campaign set of already-withheld move targets, so an
-    # uncovered candidate that re-surfaces every pass is skipped (not re-run/double
-    # -counted). None when the gate is off ⇒ the apply loop is byte-identical.
-    skip_targets: set | None = set() if covered_only else None
+    # The SAME single probe also arms the END-OF-CAMPAIGN regression backstop for
+    # a STANDALONE gated apply (see _campaign_baseline_and_backstop) — a caller
+    # that supplied its baseline (the develop session) runs its own backstop.
+    campaign_baseline, backstop = _campaign_baseline_and_backstop(
+        root, apply, verify, baseline_failing)
+    # COVERED-ONLY / AVOID-AWARE: the per-campaign set of already-withheld and/or
+    # avoid-flagged move targets, so a candidate that re-surfaces every pass is
+    # skipped (not re-run/double-counted or re-announced). None when BOTH gates
+    # are off ⇒ the apply loop is byte-identical (see ``_initial_skip_targets``).
+    skip_targets: set | None = _initial_skip_targets(covered_only, avoid_aware)
     for _pass in range(max_steps + 1):
         if len(result.steps) >= max_steps:
             break
@@ -1476,14 +1788,19 @@ def compile_objective(project_root: str | Path, objective: str = "dead-params",
         progressed, current, last_operator = _run_pass(
             result, moves, root, current, max_steps, verify, effective_scope,
             last_operator, memory, value_aware, min_move_value, covered_only,
-            skip_targets, campaign_baseline, realization)
+            skip_targets, campaign_baseline, realization, avoid_aware)
         if not progressed:
             break
 
     result.fitness_end = current
+    # END-OF-CAMPAIGN regression backstop (standalone gated applies only): may
+    # restore every changed file and empty ``steps`` — so it runs BEFORE the
+    # composition/playbook learning below, which must never credit a campaign
+    # whose contributions did not hold.
+    _finish_regression_backstop(result, root, backstop)
     _record_composition(result, root)
     if apply and result.steps:
-        _archive_campaign(result, root, objective, start, current)
+        _archive_campaign(result, root, objective, start, result.fitness_end)
     return result
 
 
@@ -1504,7 +1821,11 @@ def run_moves(project_root: str | Path, moves: list[Move], *,
     the caller opts in). Fitness here is the COUNT of supplied moves (one unit of
     debt per move; monotone like the objective loop), so the report reads identically
     to a single objective's. Deterministic: moves are taken in the given order — the
-    primitive owns the (sorted) ordering, this runner never re-sorts."""
+    primitive owns the (sorted) ordering, this runner never re-sorts. A gated apply
+    also carries the SAME end-of-campaign regression backstop as
+    :func:`compile_objective` (see :func:`_finish_regression_backstop`) — run_moves
+    is a standalone applied path too, so a transitive regression its impact-scoped
+    gate missed is re-checked once and restored, never silently kept."""
     from app.engine.idea_memory import IdeaMemory
 
     root = str(project_root)
@@ -1514,10 +1835,16 @@ def run_moves(project_root: str | Path, moves: list[Move], *,
     if not apply:
         return _fill_dry_run(result, moves[:max_steps], start, max_steps)
     memory = IdeaMemory.load(root)
+    # The SAME end-of-campaign regression backstop compile_objective carries:
+    # run_moves is a standalone gated apply too (no caller-owned baseline), so a
+    # transitive regression its impact-scoped gate missed must be re-checked and
+    # restored, never silently kept. Un-gated runs (``verify=False``) arm nothing.
+    backstop = _arm_backstop(root) if verify else None
     _progressed, current, _last = _run_pass(
         result, moves, root, start, max_steps, verify, scope_verify,
         last_operator="", memory=memory)
     result.fitness_end = current
+    _finish_regression_backstop(result, root, backstop)
     _record_composition(result, root)
     return result
 
@@ -1572,11 +1899,20 @@ def _record_composition(result: CompileResult, project_root: str) -> None:
         pass  # learning is best-effort; never fail a successful compile on it
 
 
-def _compile_tier_tag(s: CompileStep) -> str:
+def _compile_tier_tag(s: CompileStep, applied: bool = True) -> str:
     """Honest per-move tag: a green suite is only "verified" when a test actually
     EXERCISED the change (function/module/test-change). A green-but-unreferencing
     suite (``coverage == none``) is disclosed as a weak tier, and a suite-less
-    apply as ``no-suite`` — never blended with a genuine verified move."""
+    apply as ``no-suite`` — never blended with a genuine verified move.
+
+    ``applied=False`` (a DRY-RUN result — keyed off ``CompileResult.applied``)
+    takes the PREVIEW branch instead: a projected step was never applied and no
+    suite ran, so its raw ``verified=False`` must never read as ``no-suite``
+    ("applied, nothing verified it" — both claims false on a preview of a
+    suite-carrying project). The default keeps every applied render, and every
+    existing one-arg caller, byte-identical."""
+    if not applied:
+        return " 🔍 preview — not applied yet; will be test-verified on --apply"
     if s.coverage_verified:
         return " ✅ tests pass (covered)"
     if s.verified:
@@ -1599,8 +1935,16 @@ def _compile_breakdown(result: CompileResult, verb: str) -> str:
     The verified/weak/no-suite split keeps the honest never-fake-green tier (only
     a test-COVERED move counts as "verified"). The mean buyer-value is appended
     only when value-aware selection recorded values — omitted for every default
-    campaign, so the headline is byte-identical there."""
+    campaign, so the headline is byte-identical there.
+
+    A DRY-RUN result takes the PREVIEW branch: nothing was applied and no suite
+    ran, so a "0 verified, N no-suite" split would be false twice over (the
+    audited "48 moves, ALL no-suite" confusion) — the honest headline says the
+    moves are projected and will be gated on ``--apply``."""
     landed = len(result.steps)
+    if not result.applied:
+        return (f"{verb.lower()} {landed} move(s) — preview: not applied yet; "
+                "each will be test-verified on --apply")
     verified = sum(1 for s in result.steps if s.coverage_verified)
     weak = sum(1 for s in result.steps if s.verified and not s.coverage_verified)
     no_suite = landed - verified - weak
@@ -1613,6 +1957,25 @@ def _compile_breakdown(result: CompileResult, verb: str) -> str:
     if valued:
         breakdown += f", mean buyer-value {sum(valued) / len(valued):.2f}"
     return breakdown
+
+
+def _backstop_disclosure_line(result: CompileResult) -> str:
+    """The loud end-of-campaign backstop rollback disclosure, per verdict.
+
+    Two distinct shapes, mirroring the session's wording discipline: a genuine
+    regression NAMES the previously-GREEN node(s) that went red; a collapsed
+    re-run says plainly that nothing could vouch for the tree, so it was
+    restored fail-closed — never read as "no regressions"."""
+    if result.regression_backstop == BACKSTOP_INVALID:
+        return ("⚠️ End-of-campaign backstop: the verification re-run collapsed "
+                "before any per-test result, so it could not vouch for the tree "
+                "— the campaign was ROLLED BACK to its pre-campaign bytes "
+                "(fail closed); no move landed.")
+    nodes = ", ".join(f"`{n}`" for n in result.backstop_regressed_nodes)
+    detail = f" ({nodes})" if nodes else ""
+    return ("⚠️ End-of-campaign backstop: a previously-GREEN test "
+            f"regressed{detail} — the campaign was ROLLED BACK to its "
+            "pre-campaign bytes (auto-rollback); no move landed.")
 
 
 def render_compile_markdown(result: CompileResult) -> str:
@@ -1633,15 +1996,23 @@ def render_compile_markdown(result: CompileResult) -> str:
         lines.append(f"⚠️ {result.verification_unavailable}")
         lines.append("")
         return "\n".join(lines)
-    if result.blocked and not result.steps:
+    rolled_back = result.regression_backstop in (BACKSTOP_REGRESSED,
+                                                 BACKSTOP_INVALID)
+    if result.blocked and not result.steps and not rolled_back:
         lines.append(f"_No improving move available. Fitness: {result.fitness_start:g}._")
     lines.append(
         f"Fitness {result.fitness_start:g} → **{result.fitness_end:g}** "
         f"({_compile_breakdown(result, verb)})."
     )
     lines.append("")
+    if rolled_back:
+        # The end-of-campaign backstop restored the tree — say so loudly (the
+        # honest sibling of the session's auto-rollback disclosure), never let
+        # the empty step list read as "nothing to do".
+        lines.append(_backstop_disclosure_line(result))
+        lines.append("")
     for i, s in enumerate(result.steps, 1):
-        tick = _compile_tier_tag(s)
+        tick = _compile_tier_tag(s, result.applied)
         lines.append(f"{i}. {s.description} — {s.fitness_before:g}→{s.fitness_after:g}{tick}")
     if result.blocked:
         lines.append("")

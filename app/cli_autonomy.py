@@ -426,6 +426,71 @@ def _auto_dream_boost(target) -> dict:
         return {}
 
 
+# The immune-exposure boost's rank decay: the top-exposed module gets the full
+# base boost, each next-most-exposed module a shrinking fraction of it — same
+# ballpark as ``DREAM_CONFLUENCE_BOOST`` (1.0) so neither signal dominates the
+# other when ``_merge_boosts`` sums them.
+_IMMUNE_BOOST_BASE = 1.0
+_IMMUNE_BOOST_DECAY = 0.8
+
+
+def _auto_immune_boost(target) -> dict:
+    """The immune-exposure priority boost `apex auto` threads into
+    ``plan_roadmap`` so the value board AMPLIFIES the organism's OWN proactive
+    blind-spot sense — the modules ``immune_posture`` ranks most mutation-exposed
+    (many blindly-callable public functions, no linked test) lead within their
+    phase — instead of ranking on the AST signals alone.
+
+    Reuses ``immune_posture`` (a pure, offline read of the project's own module
+    ASTs + a test-filename glob — no mutation run, no clock/random, no writes),
+    so it is cheap enough to run every auto invocation and deterministic. Only
+    the genuinely EXPOSED modules (``has_linked_test`` is False — the strongest,
+    cheapest blind-spot signal) earn a boost; a module with a linked test is not
+    "exposed" in this sense and gets none, so an all-tested project yields an
+    EMPTY map. The boost is RANK-DECAYED — ``_IMMUNE_BOOST_BASE *
+    _IMMUNE_BOOST_DECAY ** rank`` — so the single most-exposed module leads every
+    other exposed module within its phase, tapering for the rest, never zero and
+    never negative.
+
+    REFUSAL-SAFE: any failure — or simply no exposed module — yields an EMPTY
+    map, and an empty ``immune_boost`` leaves ``plan_roadmap``'s ranking
+    byte-for-byte identical to the pre-immune-boost order. No exposure ⇒ zero
+    behaviour change; the map only ever REORDERS within a phase, never changes
+    WHICH steps run, so the suite-gated + auto-rollback landings are untouched
+    (never-fake-green is not on this path)."""
+    try:
+        from app.reporting.immune_report import immune_posture
+
+        rows = immune_posture(str(target)).get("top_risk") or []
+        exposed = [row["module"] for row in rows
+                  if row.get("module") and not row.get("has_linked_test")]
+        return {
+            module: _IMMUNE_BOOST_BASE * (_IMMUNE_BOOST_DECAY ** rank)
+            for rank, module in enumerate(exposed)
+        }
+    except Exception:
+        return {}
+
+
+def _merge_boosts(*maps) -> dict:
+    """Sum per-module priority boosts across any number of boost maps (e.g. the
+    dream-confluence boost and the immune-exposure boost) into ONE map a single
+    ``plan_roadmap``/``_auto_act`` call can consume.
+
+    A module flagged by MULTIPLE sources earns the SUM of their boosts, so a
+    module that is both a dream confluence AND immune-exposed leads every peer
+    flagged by only one signal. Deterministic and order-independent: addition is
+    commutative, so ``_merge_boosts(a, b) == _merge_boosts(b, a)``. Tolerant of
+    ``None``/missing maps (treated as empty) so a caller can pass either boost
+    unconditionally. All-empty inputs (or no inputs at all) yield ``{}`` —
+    the byte-identical base case."""
+    merged: dict = {}
+    for boost_map in maps:
+        for module, value in (boost_map or {}).items():
+            merged[module] = merged.get(module, 0.0) + value
+    return merged
+
+
 def _auto_deep_disclosure(args) -> str:
     """The one-line disclosure shown when ``--deep`` is OFF: deeper (pytest-cost)
     synthesis is available, so the cost stays visible and opt-in (never silent).
@@ -712,11 +777,14 @@ def _auto_act(args, target, goal, bridge, engine, report, mode,
     verified). A green-but-unreferencing move is PREVIEWED but withheld unless
     ``--allow-weak`` restores today's behaviour (byte-identical apply).
 
-    ``dream_boost`` amplifies dream-graduated confluences in the roadmap ranking
-    (leads within a phase); an empty/None map leaves the plan byte-identical, so
-    a no-dream project applies exactly what it would have pre-dream. The boost
-    only REORDERS — the covered-only, suite-gated, auto-rollback landing is
-    untouched (never-fake-green is off this path)."""
+    ``dream_boost`` is a generic module -> priority-boost map (the caller may
+    merge multiple signals into it, e.g. ``_merge_boosts(dream_boost,
+    immune_boost)``); it amplifies dream-graduated confluences AND/OR
+    immune-exposed modules in the roadmap ranking (leads within a phase). An
+    empty/None map leaves the plan byte-identical, so a project with neither
+    signal applies exactly what it would have before either boost existed. The
+    boost only REORDERS — the covered-only, suite-gated, auto-rollback landing
+    is untouched (never-fake-green is off this path)."""
     from app.engine.idea_action_bridge import render_maintenance_markdown
 
     plan = bridge.plan_roadmap(report, mode=mode, project_root=str(target), draft=True,
@@ -867,21 +935,27 @@ def cmd_auto(args: argparse.Namespace) -> int:
     bridge = IdeaActionBridge()
     commit = getattr(args, "commit", False)
 
-    # The dream-confluence boost: `apex auto` AMPLIFIES the organism's own
-    # overnight discovery (the modules the dream graduated as confluences lead
-    # within their phase) when ranking the value board. REFUSAL-SAFE — an empty
-    # map (no persisted dream / unreadable / below-gate) leaves the ranking
-    # byte-for-byte identical to the AST-only order, so no-dream projects are
-    # unchanged. Computed ONCE and shared by the scout and the act path so the
-    # recommend count and what `--apply` lands tell one honest story.
+    # The priority boost: `apex auto` AMPLIFIES the organism's OWN signals — both
+    # the dream-confluence boost (the modules the dream graduated as confluences
+    # lead within their phase) AND the immune-exposure boost (the modules
+    # ``immune_posture`` ranks most mutation-exposed — many blindly-callable
+    # public functions, no linked test — lead within their phase too) — when
+    # ranking the value board, instead of ranking on the AST signals alone.
+    # REFUSAL-SAFE — an empty merged map (no persisted dream AND no immune
+    # exposure) leaves the ranking byte-for-byte identical to the AST-only
+    # order, so a project with neither signal is unchanged. Computed ONCE and
+    # shared by the scout and the act path so the recommend count and what
+    # `--apply` lands tell one honest story.
     dream_boost = _auto_dream_boost(target)
+    immune_boost = _auto_immune_boost(target)
+    priority_boost = _merge_boosts(dream_boost, immune_boost)
 
     # How many safe, executable fixes are available, and is the tree clean? The
     # scout enables the SAME synthesis opt-ins the act path will (cheap always,
     # expensive under --deep), so the recommend count and what `--apply` would
     # land tell one honest story.
     scout = bridge.plan_roadmap(report, mode="report", project_root=str(target),
-                                dream_boost=dream_boost,
+                                dream_boost=priority_boost,
                                 **_auto_synthesis_kwargs(args))
     executable = scout.stats.get("executable_steps", 0)
     tree_clean = _working_tree_clean(target)
@@ -909,7 +983,7 @@ def cmd_auto(args: argparse.Namespace) -> int:
         return _auto_recommend(args, target, goal, shape, roadmap, sec_n,
                                executable, decision, emit_json)
     return _auto_act(args, target, goal, bridge, engine, report, mode,
-                     commit, decision, emit_json, dream_boost)
+                     commit, decision, emit_json, priority_boost)
 
 
 
@@ -1238,7 +1312,8 @@ def _develop_auto(args, target, grade_before, max_steps, verify, apply) -> int:
                                    scope_verify=getattr(args, "fast", False),
                                    min_move_value=_min_move_value(args),
                                    scope_module=scope_module,
-                                   covered_only=covered_only)
+                                   covered_only=covered_only,
+                                   risk_aware=getattr(args, "risk_aware", False))
         if (result.steps or result.fitness_start > 0
                 or result.verification_unavailable):
             # Retain a verification-unavailable decline so `apex develop --auto`
@@ -2444,6 +2519,10 @@ def register_parsers(subparsers) -> None:
     develop_parser.add_argument("--target", default="", help="Target project root")
     develop_parser.add_argument("--objective", default="dead-params",
                                 help="Objective to pursue (default: dead-params)")
+    develop_parser.add_argument(
+        "--risk-aware", action="store_true", dest="risk_aware",
+        help="Order moves by LEARNED rollback risk (proof history) — try the "
+             "low-risk ones first, like the maintain path; no-op without history")
     develop_parser.add_argument(
         "--session", action="store_true",
         help="Run the combined concrete-objective session (same as the `session` "

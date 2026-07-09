@@ -119,6 +119,10 @@ def test_partial_loop_body_range_blocks(tmp_path):
 def test_whole_loop_with_break_extracts_cleanly(tmp_path):
     # When the ENTIRE loop is selected, an inner break stays with its loop —
     # the extraction is valid (break is not a blocker in a complete selection).
+    # `found` is pre-set to None then assigned only CONDITIONALLY inside the loop
+    # and read after, so it must be THREADED THROUGH (passed in AND returned): the
+    # old `def _scan(items):` returned a maybe-unbound `found` (UnboundLocalError
+    # when no item matched — never checked here); the correct helper passes it in.
     _write(tmp_path, "b.py",
            "def f(items):\n"
            "    found = None\n"
@@ -129,10 +133,54 @@ def test_whole_loop_with_break_extracts_cleanly(tmp_path):
            "    return found\n")
     plan = plan_extract(str(tmp_path), "b.py", 3, 6, "_scan")
     assert not plan.blockers
-    assert "def _scan(items):" in plan.new_contents["b.py"]
+    assert "def _scan(found, items):" in plan.new_contents["b.py"]
+    assert "found = _scan(found, items)" in plan.new_contents["b.py"]
 
 
-def test_name_collision_blocks(tmp_path):
+def test_conditional_new_binding_read_after_is_refused(tmp_path):
+    # THE packaging.licenses fake-green defect: a name assigned ONLY inside a
+    # conditional branch (here `msg`, inside `if not raw: ...; raise`) that does
+    # NOT pre-exist and is read AFTER the range would be returned by the helper as
+    # `return ..., msg` — UnboundLocalError on the normal path. Because a covering
+    # test may not exercise that path, this fake-greened on real code, so the
+    # planner must REFUSE the extraction rather than emit an unsound return.
+    _write(tmp_path, "m.py",
+           "def canon(raw):\n"
+           "    if not raw:\n"
+           "        msg = 'empty'\n"
+           "        raise ValueError(msg)\n"
+           "    out = raw.strip()\n"
+           "    if '!' in out:\n"
+           "        msg = 'bang'\n"
+           "        raise ValueError(msg)\n"
+           "    return out\n")
+    plan = plan_extract(str(tmp_path), "m.py", 2, 5, "_part")
+    assert plan.blockers, "must refuse: `msg` is a conditional, non-pre-existing output"
+    assert "msg" in plan.blockers[0] and "conditionally" in plan.blockers[0]
+
+
+def test_seam_never_starts_at_the_docstring(tmp_path):
+    # THE toml.loads defect: a public function's docstring is public API; sweeping
+    # it into an extracted helper drops `fn.__doc__` to None. The best-seam scan
+    # must never begin at the leading docstring (line 2 here) — it stays put.
+    import ast
+
+    from app.execution.extract_method import _scan_function
+    src = (
+        "def big(a):\n"
+        '    "the public docstring"\n'   # line 2 — must NOT be swept into a helper
+        "    x = a + 1\n"
+        "    y = x + 1\n"
+        "    z = y + 1\n"
+        "    w = z + 1\n"
+        "    v = w + 1\n"
+        "    u = v + 1\n"
+        "    t = u + 1\n"
+        "    return t\n")
+    fn = ast.parse(src).body[0]
+    seam = _scan_function(fn)
+    assert seam is not None, "a long straight-line function should yield a seam"
+    assert seam["start"] >= 3, f"seam swept the docstring (start={seam['start']})"
     _write(tmp_path, "n.py",
            "def existing():\n"
            "    pass\n"

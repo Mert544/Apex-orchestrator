@@ -123,6 +123,44 @@ def _stores(nodes: list) -> set[str]:
     return out - comp
 
 
+def _target_names(target) -> set[str]:
+    """Names bound by one assignment target — a bare ``Name`` or a
+    ``Tuple``/``List``/``Starred`` unpacking of them."""
+    return {n.id for n in ast.walk(target)
+            if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)}
+
+
+def _definitely_assigned(stmts: list) -> set[str]:
+    """Names bound on EVERY path that runs ``stmts`` to normal completion — the
+    targets of the range's TOP-LEVEL ``=`` / annotated-``=``-with-value / ``+=`` /
+    ``with ... as`` statements.
+
+    A name bound only inside a NESTED block (an ``if``/``for``/``while``/``try``/
+    ``with`` body — e.g. ``if bad: msg = ...; raise``) is NOT definitely assigned
+    at the range's normal exit, so it must never become a helper RETURN value:
+    ``return <maybe-unbound>`` raises ``UnboundLocalError`` on the path that
+    skipped the block. This is the real defect it guards — extracting
+    ``packaging.licenses.canonicalize_license_expression`` returned ``message``,
+    which is set only inside an ``if ...: raise``. Extract-method already blocks
+    ranges containing ``return``/``yield`` (see ``_CONTROL_NODES``); a nested
+    ``raise`` only ever EXITS, so a top-level statement still binds definitely on
+    the normal path."""
+    out: set[str] = set()
+    for s in stmts:
+        if isinstance(s, ast.Assign):
+            for t in s.targets:
+                out |= _target_names(t)
+        elif isinstance(s, ast.AnnAssign) and s.value is not None:
+            out |= _target_names(s.target)
+        elif isinstance(s, ast.AugAssign):
+            out |= _target_names(s.target)
+        elif isinstance(s, (ast.With, ast.AsyncWith)):
+            for item in s.items:
+                if item.optional_vars is not None:
+                    out |= _target_names(item.optional_vars)
+    return out
+
+
 def _augmented_targets(nodes: list) -> set[str]:
     """AugAssign targets (``x += 1``) — both a read of the prior value and a
     store, so they belong to live-in when the name pre-exists."""
@@ -198,7 +236,12 @@ def _data_flow(fn, before: list, stmts: list, after: list) -> tuple[list[str], l
     """The (live_in, live_out) of extracting ``stmts`` from ``fn``: names read
     from the surrounding scope become parameters, names defined here and read
     afterward become return values. Single source of truth for the planner and
-    the suggester."""
+    the suggester.
+
+    ``live_out`` here is the RAW defined∩read-after set. Callers that would emit a
+    ``return`` for these names must ALSO reject the range when
+    :func:`_unsafe_conditional_outputs` is non-empty — a name defined only
+    conditionally cannot be soundly returned (see that guard)."""
     params_and_prior = _function_param_names(fn) | _stores(before)
     reads = _loads(stmts) | _augmented_targets(stmts)
     live_in = sorted(n for n in reads if n in params_and_prior)
@@ -207,6 +250,35 @@ def _data_flow(fn, before: list, stmts: list, after: list) -> tuple[list[str], l
     reads_after = _loads(after)
     live_out = sorted(n for n in defined if n in reads_after)
     return live_in, live_out
+
+
+def _conditional_output_split(fn, before: list, stmts: list,
+                              after: list) -> tuple[list[str], list[str]]:
+    """Split the range's read-after outputs that are NOT definitely assigned into
+    ``(extra_in, unsafe)``.
+
+    A name (re)assigned only CONDITIONALLY in the range (inside an ``if``/``for``/
+    ``try``/… body, so not bound on every path to the range's normal exit) but
+    read AFTER the range must be RETURNED (else the reassignment is lost) AND be
+    bound on entry (else the ``return`` is maybe-unbound → ``UnboundLocalError``).
+
+    * ``extra_in`` — names that PRE-EXIST the range (a parameter or a local set
+      before it). These are threaded through as extra helper parameters (passed IN
+      and returned), which is sound: bound on entry, updated conditionally,
+      returned. A finder loop over a ``found`` pre-set to ``None`` is fine.
+    * ``unsafe`` — names that do NOT pre-exist: a brand-new binding made only
+      inside a branch (e.g. ``packaging.licenses`` set ``message`` only inside an
+      ``if ...: raise``). These cannot be made bound, so the caller REFUSES the
+      extraction rather than land an ``UnboundLocalError`` a partial suite may not
+      catch (the real fake-green defect this guards)."""
+    params_and_prior = _function_param_names(fn) | _stores(before)
+    definite = _definitely_assigned(stmts)
+    defined = _stores(stmts) | _augmented_targets(stmts)
+    reads_after = _loads(after)
+    conditional = [n for n in defined if n in reads_after and n not in definite]
+    extra_in = sorted(n for n in conditional if n in params_and_prior)
+    unsafe = sorted(n for n in conditional if n not in params_and_prior)
+    return extra_in, unsafe
 
 
 def _names_with_ctx(nodes: list, ctx_type: type) -> set[str]:
@@ -264,7 +336,7 @@ class _StmtFacts:
       boolean, never the specific message string)
     """
 
-    __slots__ = ("loads", "aug", "raw_stores", "comp", "blocks")
+    __slots__ = ("loads", "aug", "raw_stores", "comp", "blocks", "definite")
 
     def __init__(self, stmt) -> None:
         # Walk the statement exactly once, then classify the flat node list with
@@ -275,6 +347,10 @@ class _StmtFacts:
         self.aug = _augassign_targets(nodes)
         self.comp = _comprehension_targets(nodes)
         self.blocks = _statement_blocks(stmt, nodes)
+        # Names this ONE statement binds DEFINITELY (top-level =/+=/with-as), so a
+        # window can tell a sound return value from a maybe-unbound one — the
+        # suggester mirror of ``_definitely_assigned`` (which the planner uses).
+        self.definite = _definitely_assigned([stmt])
 
 
 def _reindent(src_lines: list[str], base_indent: int) -> list[str]:
@@ -436,6 +512,23 @@ def plan_extract(project_root: str | Path, file_rel: str,
     before = fn.body[:fn.body.index(stmts[0])]
     after = fn.body[fn.body.index(stmts[-1]) + 1:]
     live_in, live_out = _data_flow(fn, before, stmts, after)
+    extra_in, unsafe_out = _conditional_output_split(fn, before, stmts, after)
+    if unsafe_out:
+        # A name the range assigns only CONDITIONALLY (inside an if/for/try/…
+        # body — e.g. `if bad: msg = ...; raise`) that does NOT pre-exist is read
+        # after the range. The helper would have to `return` it though it may be
+        # unbound at the exit, yielding an UnboundLocalError on the path that
+        # skipped the block. Refuse rather than land a change that fake-greens
+        # (the covering suite may not exercise that path — packaging.licenses).
+        plan.blockers.append(
+            f"the range assigns {', '.join(f'`{n}`' for n in unsafe_out)} only "
+            "conditionally but it is used after the range — returning a "
+            "maybe-unbound value would be unsound; not extracting")
+        return plan
+    # A pre-existing name reassigned only conditionally in the range must be
+    # passed IN as well as returned, so it is bound on every path (finder loop).
+    # Empty ``extra_in`` folds to a harmless no-op (``live_in`` unchanged).
+    live_in = sorted(set(live_in) | set(extra_in))
 
     # Build the helper and the replacement call from the real source text.
     lines = source.splitlines(keepends=True)
@@ -536,8 +629,14 @@ def _scan_function(fn) -> dict | None:
     suffix_loads = _suffix_loads(facts)
     param_names = _function_param_names(fn)
 
+    # Never let an extraction window START at (and so sweep away) a leading
+    # docstring: a public function's docstring is public API, and relocating it
+    # into a private helper drops ``fn.__doc__`` to None (the real regression seen
+    # extracting ``toml.loads``). The docstring stays put; windows begin after it.
+    first = 1 if (n and ast.get_docstring(fn) is not None) else 0
+
     best: tuple[int, dict] | None = None
-    for i in range(n):
+    for i in range(first, n):
         params_and_prior = param_names | prefix_stores[i]
         windows = _windows_from(fn, i, facts, line_lo, line_hi,
                                 params_and_prior, suffix_loads)
@@ -565,6 +664,7 @@ def _windows_from(fn, i: int, facts: list, line_lo: list, line_hi: list,
     win_aug: set[str] = set()
     win_raw: set[str] = set()
     win_comp: set[str] = set()
+    win_definite: set[str] = set()
     win_end = 0
     win_blocked = False
     for j in range(i + 1, n + 1):
@@ -573,13 +673,14 @@ def _windows_from(fn, i: int, facts: list, line_lo: list, line_hi: list,
         win_aug |= f.aug
         win_raw |= f.raw_stores
         win_comp |= f.comp
+        win_definite |= f.definite
         if line_hi[j - 1] > win_end:
             win_end = line_hi[j - 1]
         if f.blocks:
             win_blocked = True
         cand = _window_candidate(fn, i, j, n, start, win_end, win_blocked,
                                  win_loads, win_aug, win_raw, win_comp,
-                                 params_and_prior, suffix_loads)
+                                 win_definite, params_and_prior, suffix_loads)
         if cand is not None:
             # Deterministic tie-break: higher score, then earlier/smaller span.
             key = (cand["_score"], -cand["start"], -(cand["end"] - cand["start"]))
@@ -628,6 +729,7 @@ def _suggest_helper_name(fn_name: str) -> str:
 def _window_candidate(fn, i: int, j: int, n: int, start: int, win_end: int,
                       win_blocked: bool, win_loads: set[str], win_aug: set[str],
                       win_raw: set[str], win_comp: set[str],
+                      win_definite: set[str],
                       params_and_prior: set[str], suffix_loads: list) -> dict | None:
     """The candidate dict for window ``[i, j)`` (with a private ``_score``), or
     None when the window fails a seam-quality gate."""
@@ -635,11 +737,22 @@ def _window_candidate(fn, i: int, j: int, n: int, start: int, win_end: int,
     if not _window_shape_ok(i, j, n, lines_saved, win_blocked):
         return None
     reads = win_loads | win_aug
-    live_in = sorted(nm for nm in reads if nm in params_and_prior)
+    live_in_set = {nm for nm in reads if nm in params_and_prior}
+    defined = (win_raw - win_comp) | win_aug
+    read_after = defined & suffix_loads[j]
+    # A name read after the window but assigned only CONDITIONALLY inside it (not
+    # in ``win_definite``): if it PRE-EXISTS it is threaded through as an extra
+    # param (bound on entry, so a sound return); if it does NOT pre-exist the
+    # helper would ``return`` a maybe-unbound value — never SUGGEST such a seam
+    # (the planner refuses it too). The suggester side of the packaging.licenses
+    # fix.
+    conditional = read_after - win_definite
+    if conditional - params_and_prior:
+        return None
+    live_in = sorted(live_in_set | (conditional & params_and_prior))
     if len(live_in) > _SUGGEST_MAX_PARAMS:
         return None
-    defined = (win_raw - win_comp) | win_aug
-    live_out = sorted(nm for nm in defined if nm in suffix_loads[j])
+    live_out = sorted(read_after)
     if len(live_out) > _SUGGEST_MAX_RETURNS:
         return None
     # Favor a big body behind a small interface (few params/returns).

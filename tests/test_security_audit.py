@@ -42,11 +42,18 @@ def test_security_audit_report_format():
     assert "total_files" in summary
     assert "functions_analyzed" in summary
     assert "critical" in summary
+    assert "acknowledged" in summary
     assert "high" in summary
     assert "medium" in summary
     assert "low" in summary
+    # LIVE PIN (was red on PR #4's first security-audit CI run): Apex's own
+    # tree must audit with ZERO unacknowledged criticals — every deliberate
+    # eval/exec site carries a reviewed `# nosec <rule> - <rationale>`
+    # annotation, which the audit honors (see _split_acknowledged). Any new
+    # unannotated critical call in app/ turns this red.
+    assert summary["critical"] == 0, report["risks"]["critical"]
     # Verify examples are excluded
-    for category in ("critical", "high", "medium", "low"):
+    for category in ("critical", "acknowledged", "high", "medium", "low"):
         for risk in report["risks"][category]:
             assert "examples/" not in risk["file"]
             assert "scripts/" not in risk["file"]

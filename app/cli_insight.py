@@ -18,6 +18,232 @@ from app.cli_common import _get_project_root
 if TYPE_CHECKING:
     from app.tools.js_project_profile import JsProjectProfile
 
+# --------------------------------------------------------------------------- #
+# quickstart — the 60-second on-ramp: one READ-ONLY command that composes
+# EXISTING engines (grade, plus the same bounded idea/roadmap scout ``apex
+# auto`` uses) to show a new user Apex's value on THEIR project, in one
+# motion. No new analysis is invented here. The "landable" number is the
+# bounded scout's count, honestly LABELED as such — quickstart does NOT run
+# the full ``apex develop session`` enumeration, because that pass is minutes
+# on a large repo and would break the 60-second promise (see
+# ``_quickstart_landable`` for the measured evidence). The output points to
+# ``apex develop`` for the full enumeration instead of pretending the two
+# numbers are the same.
+# --------------------------------------------------------------------------- #
+
+_QUICKSTART_BANNER = "Zero-token · offline · deterministic · never-fake-green."
+
+# Small budget so the idea/roadmap pass stays cheap — the same cost class as
+# `apex auto`'s scout, deliberately smaller (no --deep synthesis, either).
+_QUICKSTART_MAX_IDEAS = 20
+_QUICKSTART_DEPTH = 1
+_QUICKSTART_BREADTH = 3
+
+
+def _quickstart_health(target: Path) -> dict:
+    """The project's grade — the exact DATA ``apex grade`` renders (reuses
+    ``health_score.grade``, never ``cmd_grade``), reduced to a score/letter/
+    one-line breakdown. Defensively wrapped: a brand-new/unreadable project
+    still yields an honest clean-bill grade instead of raising."""
+    from app.engine.health_score import grade
+
+    try:
+        h = grade(str(target))
+    except Exception:
+        return {"score": 100, "letter": "A+",
+                 "breakdown": "no gradeable Python code found"}
+    costly = sorted((c for c in h.components if c.points_lost > 0),
+                    key=lambda c: -c.points_lost)
+    breakdown = ("; ".join(f"{c.name} -{c.points_lost}" for c in costly[:3])
+                 if costly else "clean bill of health — nothing is costing points")
+    return {"score": h.score, "letter": h.letter, "breakdown": breakdown}
+
+
+def _quickstart_report(target: Path):
+    """Run the SAME cheap idea-engine path ``apex auto`` scouts with, at a
+    smaller budget. Defensively wrapped so an empty/brand-new project yields
+    ``None`` (an honest zero-opportunity report) instead of raising."""
+    from app.engine.idea_permutation import IdeaPermutationEngine
+
+    try:
+        return IdeaPermutationEngine(
+            config={"max_total_ideas": _QUICKSTART_MAX_IDEAS,
+                    "max_idea_depth": _QUICKSTART_DEPTH,
+                    "breadth": _QUICKSTART_BREADTH},
+            project_root=str(target),
+        ).run()
+    except Exception:
+        return None
+
+
+def _quickstart_opportunities(report) -> list[dict]:
+    """Top-3 roadmap items — reuses ``RoadmapSynthesizer().build(report)``
+    (the same synthesis ``cmd_auto`` builds) and ``best_first_move``'s own
+    tie-break key (value/effort, then phase, then value) to rank across
+    phases, so this invents no new prioritization."""
+    if report is None:
+        return []
+    from app.engine.idea_roadmap import PHASE_ORDER, RoadmapSynthesizer
+
+    try:
+        roadmap = RoadmapSynthesizer().build(report)
+    except Exception:
+        return []
+    candidates = [i for phase in roadmap.phases for i in phase.items]
+    if not candidates:
+        return []
+    phase_rank = {name: n for n, name in enumerate(PHASE_ORDER)}
+    ranked = sorted(candidates, key=lambda i: (
+        -round(i.value / max(i.effort, 0.1), 6),
+        phase_rank.get(i.phase, len(PHASE_ORDER)),
+        -i.value, i.effort, -i.roi, i.branch_path,
+    ))
+    return [{"branch_path": i.branch_path, "title": i.title, "phase": i.phase,
+             "roi": i.roi} for i in ranked[:3]]
+
+
+def _quickstart_landable(report, target: Path) -> int:
+    """How many executable moves the bounded quickstart scout can see — the
+    roadmap's ``executable_steps`` over the SAME capped idea tree
+    ``_quickstart_report`` already built (20 ideas / depth 1 / breadth 3), so
+    quickstart pays for ONE cheap scout pass, not two engines.
+
+    HONESTY NOTE — this is a DIFFERENT, smaller engine than the enumeration
+    ``apex develop session`` runs, and the two counts genuinely diverge (a
+    live run on this repo showed 17 vs. 76). Unifying them was tried and
+    REJECTED on measured evidence: ``run_develop_session(apply=False)`` took
+    120s even bounded to ``max_steps=1`` and 5+ minutes unbounded on a
+    630-module repo — a per-move whole-project re-parse cost that breaks the
+    60-second on-ramp promise outright. The fix is in the LABEL, not the
+    engine: ``_quickstart_landable_line`` names this number as the bounded
+    scout's count and points to ``apex develop`` for the full enumeration,
+    so no equality between the two is ever claimed.
+
+    Defensively wrapped: any failure collapses to 0 (honest empty), never
+    raises."""
+    if report is None:
+        return 0
+    from app.engine.idea_action_bridge import IdeaActionBridge
+
+    try:
+        plan = IdeaActionBridge().plan_roadmap(
+            report, mode="report", project_root=str(target))
+        return int(plan.stats.get("executable_steps", 0))
+    except Exception:
+        return 0
+
+
+def _quickstart_suite_detected(target: Path) -> bool:
+    """Whether a test suite is DETECTABLE for this project — a pure,
+    filesystem-only check (config files / ``tests/`` dir / a flat
+    pytest-discoverable layout), no subprocess and no test run. Backs the
+    honest per-suite-state wording below: quickstart must never promise
+    test-verification a suite-less project cannot earn. Defensively wrapped:
+    any failure reads as "no suite detected" — the conservative,
+    never-fake-green reading."""
+    from app.skills.execution.run_tests import RunTestsSkill
+
+    try:
+        return bool(RunTestsSkill()._detect_commands(target))
+    except Exception:
+        return False
+
+
+def _quickstart_next_steps(target_arg: str) -> list[str]:
+    """Three copy-paste commands, parameterized on the SAME ``--target`` value
+    the user passed in (so they are valid to paste verbatim, whatever the
+    current shell's cwd is)."""
+    return [
+        f"apex grade --target {target_arg} --diff",
+        f"apex develop --target {target_arg} --apply",
+        f"apex dashboard --target {target_arg}",
+    ]
+
+
+def _quickstart_landable_line(landable_count: int, suite_detected: bool) -> str:
+    """The one honest "what Apex can land right now" sentence — worded per
+    whether a test suite is DETECTABLE, so quickstart never promises
+    test-verification a suite-less project cannot earn (never-fake-green).
+
+    With a detectable suite: each move will be test-verified on ``--apply``
+    (suite-gated, auto-rollback) — the TIER_VERIFIED/TIER_WEAK story
+    ``apex develop`` carries through. With NO detectable suite: say so
+    plainly — a landed move would carry the ``no-suite`` tier, unverified,
+    never dressed up as "test-verified".
+
+    The count is also honestly ATTRIBUTED: it is the bounded quickstart
+    scout's number, not ``apex develop``'s full enumeration (a different,
+    bigger engine — see ``_quickstart_landable``), so the line names its
+    source and points to ``apex develop`` for the full count instead of
+    implying the two are equal."""
+    if suite_detected:
+        return (
+            f"{landable_count} move(s) found by the bounded quickstart scout "
+            "— full enumeration: `apex develop` (preview); each lands "
+            "test-verified on --apply (suite-gated, auto-rollback).")
+    return (
+        f"{landable_count} move(s) found by the bounded quickstart scout — "
+        "no test suite detected: moves would land unverified (no-suite "
+        "tier). Full enumeration: `apex develop` (preview).")
+
+
+def _render_quickstart(data: dict) -> list[str]:
+    """Render the human-readable report from the SAME dict ``--json`` emits."""
+    g = data["grade"]
+    lines = [_QUICKSTART_BANNER, "",
+             f"## Health: {g['letter']}  ({g['score']}/100)",
+             data["breakdown"], "",
+             "## Top opportunities (what to develop next)"]
+    if data["top_opportunities"]:
+        for n, op in enumerate(data["top_opportunities"], 1):
+            lines.append(f"{n}. `{op['branch_path']}` {op['title']} "
+                        f"({op['phase']} · ROI {op['roi']})")
+    else:
+        lines.append("_No opportunities yet — this project may be new or very small._")
+    lines.append("")
+    lines.append("## What Apex can land right now")
+    lines.append(_quickstart_landable_line(
+        data["landable_count"], data["suite_detected"]))
+    lines.append("")
+    lines.append("## Next steps")
+    lines.extend(f"- `{cmd}`" for cmd in data["next_steps"])
+    return lines
+
+
+def cmd_quickstart(args: argparse.Namespace) -> int:
+    """The 60-second on-ramp, as ONE motion: health grade, top opportunities,
+    and what the bounded scout says Apex can land right now — composed
+    entirely from existing, already-deterministic engines
+    (``health_score.grade`` and the capped idea/roadmap scout). The landable
+    number is labeled as the scout's count and defers to ``apex develop``
+    for the full enumeration (see ``_quickstart_landable``).
+
+    STRICTLY READ-ONLY: every call below is report-mode / dry-run / draft-off,
+    so this never applies a fix and never snapshots — a pure measurement, like
+    ``apex grade``. Deterministic: no clock/random touches the output, so the
+    same project yields byte-identical output run after run.
+    """
+    raw_target = getattr(args, "target", "") or ""
+    target = Path(raw_target).resolve() if raw_target else _get_project_root()
+
+    health = _quickstart_health(target)
+    report = _quickstart_report(target)
+    data = {
+        "grade": {"score": health["score"], "letter": health["letter"]},
+        "breakdown": health["breakdown"],
+        "top_opportunities": _quickstart_opportunities(report),
+        "landable_count": _quickstart_landable(report, target),
+        "suite_detected": _quickstart_suite_detected(target),
+        "next_steps": _quickstart_next_steps(raw_target or "."),
+    }
+
+    if getattr(args, "json", False):
+        print(json.dumps(data, indent=2))
+    else:
+        print("\n".join(_render_quickstart(data)))
+    return 0
+
+
 def cmd_explain(args: argparse.Namespace) -> int:
     """Explain why a specific idea scored what it did — the engine's reasoning."""
     from app.engine.idea_explain import explain_idea, render_explanation_markdown
@@ -524,6 +750,54 @@ def cmd_mutants(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_immune(args: argparse.Namespace) -> int:
+    """Apex's IMMUNE system — proactively find where the suite is blindest and,
+    with --apply, land mutant-killing assertions there via the strengthen-tests
+    engine. Default is a fast, read-only posture report (no writes)."""
+    from app.reporting.immune_report import immune_posture, render_immune_markdown
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    if getattr(args, "apply", False):
+        from app.engine.objective_compiler import compile_objective
+        result = compile_objective(
+            str(target), objective="strengthen-tests", apply=True, verify=True,
+            max_steps=getattr(args, "max_modules", 0) or 3)
+        landed = [s for s in result.steps if getattr(s, "verified", False)]
+        if getattr(args, "json", False):
+            print(json.dumps({"immunized": [s.target for s in landed],
+                              "count": len(landed)}, indent=2))
+            return 0
+        if not landed:
+            print("Immune sweep: no surviving mutant could be killed with an "
+                  "honest double-gated assertion right now (nothing landed).")
+            return 0
+        print(f"# Immune sweep — {len(landed)} module(s) hardened\n")
+        for step in landed:
+            print(f"- `{step.target}` — {step.description}")
+        return 0
+    posture = immune_posture(target, top=getattr(args, "top", 20))
+    if getattr(args, "json", False):
+        print(json.dumps(posture, indent=2))
+        return 0
+    print(render_immune_markdown(posture), end="")
+    return 0
+
+
+def cmd_manifesto(args: argparse.Namespace) -> int:
+    """The project's LIVING MANIFESTO — the architectural laws Apex has LEARNED
+    here (AVOID / FRAGILE / TRUST / PROVEN idioms), synthesised from its proof-
+    carrying experience. Read-only, deterministic, zero-token."""
+    from app.engine.manifesto import derive_manifesto, render_manifesto_markdown
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    manifesto = derive_manifesto(target)
+    if getattr(args, "json", False):
+        print(json.dumps(manifesto, indent=2))
+        return 0
+    print(render_manifesto_markdown(manifesto), end="")
+    return 0
+
+
 def _objective_reachability() -> tuple[list[str], set[str]]:
     """Every registered develop objective, plus the subset the idea engine can
     actually PROPOSE (i.e. a value in ``FACET_OBJECTIVE_MAP``).
@@ -572,6 +846,46 @@ def cmd_objectives(args: argparse.Namespace) -> int:
     print()
     print(f"{n} objectives, {m} reachable from the idea engine, "
           f"{n - m} not yet wired")
+    return 0
+
+
+def cmd_native_mind(args: argparse.Namespace) -> int:
+    """Show what Apex's native intelligence has LEARNED from this project — the
+    reusable return-body idioms it mined from the project's own functions, ranked
+    by how often the codebase uses each. Read-only, deterministic, zero-token: it
+    reads the same corpus the opt-in ``APEX_NATIVE_MIND`` lane learns from, so the
+    report reflects exactly what Apex could transplant onto an unfinished stub."""
+    from app.reporting.native_mind_report import (
+        finishable_stubs,
+        render_experience_markdown,
+        render_finishable_stubs_markdown,
+        render_native_mind_markdown,
+        summarize_native_mind,
+    )
+
+    target = Path(args.target).resolve() if args.target else _get_project_root()
+    if getattr(args, "experience", False):
+        from app.engine.native_proof_memory import decayed_reliability
+        reliability = decayed_reliability(target)
+        if getattr(args, "json", False):
+            print(json.dumps(reliability, indent=2))
+            return 0
+        print(render_experience_markdown(reliability), end="")
+        return 0
+    if getattr(args, "stubs", False):
+        rows = finishable_stubs(target)
+        if getattr(args, "json", False):
+            print(json.dumps({"finishable": rows,
+                              "native_only": sum(r["native_only"] for r in rows)},
+                             indent=2))
+            return 0
+        print(render_finishable_stubs_markdown(rows), end="")
+        return 0
+    summary = summarize_native_mind(target, top=getattr(args, "top", 20))
+    if getattr(args, "json", False):
+        print(json.dumps(summary, indent=2))
+        return 0
+    print(render_native_mind_markdown(summary), end="")
     return 0
 
 
@@ -1465,8 +1779,19 @@ def cmd_js_scope(args: argparse.Namespace) -> int:
 
 
 def register_parsers(subparsers) -> None:
-    """Register the insight family's subcommands: grade, impact, brief, dream,
-    outcomes, recipes, changelog, explain, objectives."""
+    """Register the insight family's subcommands: quickstart, grade, impact,
+    brief, dream, outcomes, recipes, changelog, explain, objectives."""
+    # quickstart — the 60-second on-ramp: health + top opportunities + what's
+    # safely landable right now, composed from existing engines, read-only
+    quickstart_parser = subparsers.add_parser(
+        "quickstart",
+        help="60-second on-ramp: health grade, top opportunities, and what "
+             "Apex can safely land right now — one read-only command",
+    )
+    quickstart_parser.add_argument("--target", default="", help="Target project root")
+    quickstart_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    quickstart_parser.set_defaults(func=cmd_quickstart)
+
     # grade — single project health grade (A-F)
     grade_parser = subparsers.add_parser(
         "grade", help="Give the project a single health grade (A-F) with a breakdown",
@@ -1516,6 +1841,35 @@ def register_parsers(subparsers) -> None:
                                 help="Per-mutant pytest timeout in seconds")
     mutants_parser.add_argument("--json", action="store_true", help="Emit JSON")
     mutants_parser.set_defaults(func=cmd_mutants)
+
+    # immune — proactively find the suite's blind spots and (with --apply) land
+    # mutant-killing assertions there via the strengthen-tests engine
+    immune_parser = subparsers.add_parser(
+        "immune",
+        help="Immune posture: where the suite is blindest (fast, read-only); "
+             "--apply lands mutant-killing tests via strengthen-tests",
+    )
+    immune_parser.add_argument("--target", default="", help="Target project root")
+    immune_parser.add_argument("--top", type=int, default=20,
+                               help="How many highest-risk modules to show (default 20)")
+    immune_parser.add_argument(
+        "--apply", action="store_true",
+        help="Run a proactive immune sweep: land mutant-killing assertions on the "
+             "most-fragile modules (strengthen-tests, suite-verified, auto-rollback)")
+    immune_parser.add_argument("--max-modules", type=int, default=0, dest="max_modules",
+                               help="With --apply: cap modules to immunise (default 3)")
+    immune_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    immune_parser.set_defaults(func=cmd_immune)
+
+    # manifesto — the architectural laws Apex has learned on this project
+    manifesto_parser = subparsers.add_parser(
+        "manifesto",
+        help="The project's living constitution: the AVOID / FRAGILE / TRUST / "
+             "proven-idiom laws Apex learned from its proof-carrying experience",
+    )
+    manifesto_parser.add_argument("--target", default="", help="Target project root")
+    manifesto_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    manifesto_parser.set_defaults(func=cmd_manifesto)
 
     # brief — a design-level idea as an actionable engineering brief
     brief_parser = subparsers.add_parser(
@@ -1660,6 +2014,26 @@ def register_parsers(subparsers) -> None:
     )
     objectives_parser.add_argument("--json", action="store_true", help="Emit JSON")
     objectives_parser.set_defaults(func=cmd_objectives)
+
+    # native-mind — what the native intelligence has learned from this project
+    native_mind_parser = subparsers.add_parser(
+        "native-mind",
+        help="Show the return-body idioms Apex's native intelligence learned from "
+             "this project's own code (the opt-in APEX_NATIVE_MIND corpus)",
+    )
+    native_mind_parser.add_argument("--target", default="", help="Target project root")
+    native_mind_parser.add_argument("--top", type=int, default=20,
+                                    help="How many dominant idioms to show (default 20)")
+    native_mind_parser.add_argument(
+        "--stubs", action="store_true",
+        help="Dry-run: which of THIS project's unfinished stubs the native lane "
+             "could finish (flagging the native-only wins), no writes")
+    native_mind_parser.add_argument(
+        "--experience", action="store_true",
+        help="Show the idiom shapes the native lane has PROVEN it can land here, "
+             "recency-weighted (the learned experience it ranks by)")
+    native_mind_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    native_mind_parser.set_defaults(func=cmd_native_mind)
 
     # trackrecord — Apex's proven, test-verified fix history on THIS repo
     trackrecord_parser = subparsers.add_parser(

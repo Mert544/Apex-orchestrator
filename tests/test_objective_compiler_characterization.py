@@ -113,7 +113,15 @@ def test_dead_params_applied_result_is_pinned(tmp_path):
 
 
 def test_dead_params_applied_verified_result_is_pinned(tmp_path):
-    # The suite-gated path: each landed move reports verified=True.
+    """The suite-gated path: each landed move reports verified=True.
+
+    UPDATED (2026-07-08 audit fix): a STANDALONE gated apply on a suite-carrying
+    project now also runs the end-of-campaign regression backstop and discloses
+    its verdict additively — this clean campaign carries ``regression_backstop:
+    "clean"`` (no baseline-green test regressed; the changes stand). The pin is
+    updated to include the new honest disclosure rather than freezing the pre-
+    backstop dict; see tests/test_campaign_regression_backstop_eyml.py for the
+    behaviour behind the field."""
     _project(tmp_path, _THREE_DEAD)
     r = compile_objective(str(tmp_path), objective="dead-params", apply=True, verify=True)
     assert r.to_dict() == {
@@ -144,6 +152,7 @@ def test_dead_params_applied_verified_result_is_pinned(tmp_path):
         ],
         "blocked": [],
         "applied": True,
+        "regression_backstop": "clean",
     }
 
 
