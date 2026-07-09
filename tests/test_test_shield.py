@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import subprocess
 import sys
 import textwrap
@@ -142,6 +143,34 @@ def test_existing_test_file_is_not_clobbered(tmp_path):
     _write(tmp_path, "tests/test_calc.py", "# hand-written, do not touch\n")
 
     assert generate_characterization_test(tmp_path, rel) is None
+
+
+def test_existing_test_file_short_circuits_before_read_or_parse(tmp_path, monkeypatch):
+    """When tests/test_<stem>.py already exists, bail out before reading or
+    parsing the source module — the existence check is a cheap stat and must
+    dominate cost for every already-tested module in a cover-gaps scan."""
+    rel = _make_pkg(tmp_path, "mypkg/calc.py", "def add(a, b):\n    return a + b\n")
+    _write(tmp_path, "tests/test_calc.py", "# hand-written, do not touch\n")
+
+    read_calls: list[object] = []
+    parse_calls: list[object] = []
+    orig_read_text = Path.read_text
+    orig_parse = ast.parse
+
+    def counting_read_text(self, *a, **kw):
+        read_calls.append(self)
+        return orig_read_text(self, *a, **kw)
+
+    def counting_parse(*a, **kw):
+        parse_calls.append(a)
+        return orig_parse(*a, **kw)
+
+    monkeypatch.setattr(Path, "read_text", counting_read_text)
+    monkeypatch.setattr(ast, "parse", counting_parse)
+
+    assert generate_characterization_test(tmp_path, rel) is None
+    assert read_calls == []
+    assert parse_calls == []
 
 
 def test_write_shield_test_refuses_to_clobber(tmp_path):

@@ -1399,14 +1399,14 @@ def generate_characterization_test(
     if module_stem.startswith("__"):  # __init__/__main__ are packaging, not behaviour
         return None
 
+    test_path = f"tests/test_{module_stem}.py"
+    if (root / test_path).exists():  # never clobber an existing test
+        return None
+
     source = root / rel
     try:
         tree = ast.parse(source.read_text(encoding="utf-8", errors="ignore"))
     except (OSError, SyntaxError, RecursionError, MemoryError):
-        return None
-
-    test_path = f"tests/test_{module_stem}.py"
-    if (root / test_path).exists():  # never clobber an existing test
         return None
 
     dotted = _dotted_name(rel)
