@@ -35,6 +35,7 @@ from pathlib import Path
 # `_py_files` below — stay on the single source of truth in app.engine.skip_dirs.
 from app.engine.skip_dirs import SKIPPED_DIRS as _SKIPPED_DIRS
 from app.execution._apply_verify import (
+    mark_delta_vacuous,
     run_full_suite_verification,
     stamp_coverage_strength,
 )
@@ -642,6 +643,8 @@ def _scoped_delta_verdict(proc: object, impacted: list[str], plan: RenamePlan,
     from app.execution._apply_verify import (
         _NODE_LINE,
         delta_green_disclosure,
+        delta_vacuous,
+        passed_count_of_text,
         regressed_functions,
     )
 
@@ -657,11 +660,19 @@ def _scoped_delta_verdict(proc: object, impacted: list[str], plan: RenamePlan,
     scoped_baseline = _baseline_for_files(baseline_failing, impacted)
     introduced = regressed_functions(scoped_baseline, after)
     ok = not introduced
-    return ok, {
+    # VACUOUS-DELTA: the whole scoped baseline was already red/ERROR, so this
+    # scoped run could vouch for nothing — additive, only when it actually
+    # applies (never on a partial-red or green scope), so every existing
+    # pinned evidence dict stays byte-identical.
+    vacuous = ok and delta_vacuous(scoped_baseline, passed_count_of_text(text))
+    evidence = {
         "scoped": True, "tests": impacted,
         "deselected": sorted(plan.scoped_excluded_nodes), "passed": ok,
         "delta_green": delta_green_disclosure(scoped_baseline, after),
     }
+    if vacuous:
+        evidence["delta_vacuous"] = True
+    return ok, evidence
 
 
 def _withhold_uncovered(root: Path, plan: RenamePlan, created: list[str],
@@ -924,6 +935,11 @@ def _verify_impact_scope(root: Path, plan: RenamePlan, created: list[str],
         # suite genuinely exercised them — grade exactly how strongly
         # (function vs. module) with the same machinery.
         stamp_coverage_strength(root, out, *strength_inputs)
+        # VACUOUS-DELTA (strictly AFTER the coverage stamp above — see
+        # ``mark_delta_vacuous``'s ordering note): the scoped run's evidence
+        # already flagged that the whole scope was red/ERROR at baseline.
+        if isinstance(evidence, dict) and evidence.get("delta_vacuous"):
+            mark_delta_vacuous(out)
         out["rolled_back"] = False
         # COVERED-ONLY: a smoke-only import stamps ``module``, a false green for a
         # Tier-1 behaviour change — withhold it here too. Off ⇒ byte-identical.

@@ -103,6 +103,20 @@ class CompileStep:
     # existing (pytest-present) campaign — the field is only ever set when the shared
     # verification tail reported ``verification_unavailable`` (mirrors ``coverage``).
     verification_unavailable: bool = False
+    # VACUOUS-DELTA defence-in-depth: True when this move's delta-green scope was
+    # ENTIRELY red/ERROR at baseline, so the delta comparison could vouch for
+    # nothing (nothing passed, so nothing could regress — the exact vacuous-delta
+    # backlog hole). The shared verification tail
+    # (``_apply_verify.mark_delta_vacuous``) stamps this on the result dict; it is
+    # threaded through here so the honest LABEL/RENDER surfaces (``_tier_for`` in
+    # ``develop_session.py``, ``_compile_tier_tag`` / ``_compile_tier_counts``
+    # below) NEVER blend it with a genuinely covered move — even though
+    # ``verified`` (raw "no regression") stays True and ``coverage_verified``
+    # (the SHARED verdict other files gate real actions on — see its docstring)
+    # is deliberately left untouched by this flag. Default False keeps
+    # ``to_dict`` and the tier tag byte-identical for every existing campaign
+    # (mirrors ``verification_unavailable``).
+    delta_vacuous: bool = False
 
     @property
     def coverage_verified(self) -> bool:
@@ -111,7 +125,22 @@ class CompileStep:
         bridge applies), so a green suite that merely IMPORTS a Tier-1 rewrite's
         module is NOT counted as verified — only a test that names the changed
         function is. A green suite that never looked at the change is never
-        coverage-verified. This is the honest tier the develop report counts."""
+        coverage-verified. This is the honest tier the develop report counts.
+
+        Deliberately UNCHANGED by ``delta_vacuous`` — this property is a shared
+        VERDICT, not render-only plumbing: ``app/agent/assist.py``'s
+        ``_commit_result`` gates a real ``git commit`` on
+        ``all(s.coverage_verified for s in steps)``, and other callers
+        (``chain_compiler.py``, ``dream_develop.py``) key counts off it too.
+        Changing its return value for a vacuous delta would silently change
+        that commit gate's behaviour with no test in this module exercising
+        it. The vacuous-delta honesty label lives ONLY in the label/render
+        surfaces that read ``delta_vacuous`` directly and take priority over
+        this property (:func:`_tier_for` in ``develop_session.py`` and
+        :func:`_compile_tier_tag` / :func:`_compile_tier_counts` below), so a
+        vacuous move still renders as ``baseline-red — unverifiable`` and is
+        never counted as ``verified`` in this module's own breakdown — without
+        touching the shared gate other files depend on."""
         from app.execution.risk_tiers import coverage_verifies
 
         return self.verified and coverage_verifies(self.tier, self.coverage)
@@ -137,6 +166,11 @@ class CompileStep:
         # a step from any pytest-present campaign omits it ⇒ byte-identical to before.
         if self.verification_unavailable:
             d["verification_unavailable"] = True
+        # ``delta_vacuous`` is ADDITIVE, exactly like ``verification_unavailable``:
+        # the key appears ONLY when this move's delta scope was entirely red at
+        # baseline, so a genuinely test-vouched step's dict is byte-identical.
+        if self.delta_vacuous:
+            d["delta_vacuous"] = True
         return d
 
 
@@ -1287,7 +1321,8 @@ def _apply_one_move(result: CompileResult, mv: Move, root: str, current: float,
         fitness_before=current, fitness_after=nxt,
         verified=res.get("verified") is True,
         coverage=str(res.get("coverage") or ""), value=value, tier=tier,
-        verification_unavailable=bool(res.get("verification_unavailable"))))
+        verification_unavailable=bool(res.get("verification_unavailable")),
+        delta_vacuous=bool(res.get("delta_vacuous"))))
     return True, nxt
 
 
@@ -1913,6 +1948,12 @@ def _compile_tier_tag(s: CompileStep, applied: bool = True) -> str:
     existing one-arg caller, byte-identical."""
     if not applied:
         return " 🔍 preview — not applied yet; will be test-verified on --apply"
+    if s.delta_vacuous:
+        # The move's ENTIRE delta scope was already red/ERROR at baseline: the
+        # comparison was vacuous — nothing could regress because nothing passed,
+        # so no test genuinely exercised this change. Never blend it with a
+        # coverage-verified or weak tier a real test run vouched for.
+        return " 🔶 baseline-red — unverifiable (scope already all-red at baseline)"
     if s.coverage_verified:
         return " ✅ tests pass (covered)"
     if s.verified:
@@ -1926,6 +1967,30 @@ def _compile_tier_tag(s: CompileStep, applied: bool = True) -> str:
         # honest distinction the shared verification tail draws.
         return " ⚠️ verification-unavailable — applied, pytest not importable"
     return " ⚠️ no-suite — applied, nothing verified it"
+
+
+def _compile_tier_counts(result: CompileResult) -> tuple[int, int, int, int]:
+    """The landed-step tier tally: ``(landed, verified, weak, baseline_red)``.
+
+    Extracted from :func:`_compile_breakdown` to keep that renderer under the
+    complexity ceiling. ``weak`` deliberately EXCLUDES a vacuous-delta step (it
+    earns its OWN honest ``baseline_red`` tier, never blended with "suite green
+    but uncovered" — a vacuous delta never ran a suite that could see the
+    change at all); on every existing green/partial-red campaign
+    ``delta_vacuous`` is always False, so this is a no-op there.
+
+    ``verified`` explicitly excludes a vacuous-delta step even though
+    ``CompileStep.coverage_verified`` itself no longer does (that property is
+    a SHARED verdict other files gate real actions on — see its docstring —
+    so this render-only tally applies the vacuous-delta exclusion locally
+    instead, exactly as ``weak`` already did)."""
+    landed = len(result.steps)
+    verified = sum(1 for s in result.steps
+                   if s.coverage_verified and not s.delta_vacuous)
+    baseline_red = sum(1 for s in result.steps if s.delta_vacuous)
+    weak = sum(1 for s in result.steps
+               if s.verified and not s.coverage_verified and not s.delta_vacuous)
+    return landed, verified, weak, baseline_red
 
 
 def _compile_breakdown(result: CompileResult, verb: str) -> str:
@@ -1945,12 +2010,13 @@ def _compile_breakdown(result: CompileResult, verb: str) -> str:
     if not result.applied:
         return (f"{verb.lower()} {landed} move(s) — preview: not applied yet; "
                 "each will be test-verified on --apply")
-    verified = sum(1 for s in result.steps if s.coverage_verified)
-    weak = sum(1 for s in result.steps if s.verified and not s.coverage_verified)
-    no_suite = landed - verified - weak
+    landed, verified, weak, baseline_red = _compile_tier_counts(result)
+    no_suite = landed - verified - weak - baseline_red
     breakdown = f"{verb.lower()} {landed} move(s): {verified} verified"
     if weak:
         breakdown += f", {weak} weak (suite green but uncovered)"
+    if baseline_red:
+        breakdown += f", {baseline_red} baseline-red (unverifiable)"
     if no_suite:
         breakdown += f", {no_suite} no-suite"
     valued = [s.value for s in result.steps if s.value]

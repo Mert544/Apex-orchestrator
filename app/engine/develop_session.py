@@ -81,6 +81,14 @@ TIER_NO_SUITE = "no-suite"   # the move landed but NO suite could verify it
 # off the CompileResult's ``applied`` flag in ``_collect_objective``; an applied
 # session never carries it, so applied-mode reports are byte-identical.
 TIER_PREVIEW = "preview"     # dry run: not applied yet; test-verified on --apply
+# The DISTINCT vacuous-delta tier: a move whose ENTIRE delta-green scope was
+# already red/ERROR at baseline. The delta comparison could vouch for nothing —
+# nothing passed at baseline, so nothing could regress, and no test actually
+# exercised the changed code green — even though the move's raw ``verified``
+# ("broke nothing new") reads True. Keyed off ``CompileStep.delta_vacuous`` in
+# ``_tier_for``; a move whose scope had ANY baseline-green node never carries
+# it (byte-identical for every partial-red/green-baseline campaign).
+TIER_BASELINE_RED = "baseline-red"
 
 
 def _verification_unavailable_message(interpreter: str) -> str:
@@ -242,6 +250,17 @@ class SessionReport:
                    if m.tier == TIER_PREVIEW)
 
     @property
+    def baseline_red_moves(self) -> int:
+        """Landed moves whose ENTIRE delta-green scope was already red/ERROR at
+        baseline — the delta comparison vouched for nothing (nothing passed, so
+        nothing could regress). Distinct from ``no_suite_moves`` (no suite ran
+        at all) and from ``weak_moves`` (a suite ran and covered SOMETHING, just
+        not the changed function): here a suite ran but could see nothing green
+        to compare against."""
+        return sum(1 for o in self.objectives for m in o.moves
+                   if m.tier == TIER_BASELINE_RED)
+
+    @property
     def objectives_with_work(self) -> list[SessionObjective]:
         return [o for o in self.objectives if o.moves]
 
@@ -272,6 +291,11 @@ class SessionReport:
             # (an applied session never carries the preview tier), so every
             # applied report's dict is byte-identical to before.
             data["preview_moves"] = self.preview_moves
+        if self.baseline_red_moves:
+            # ADDITIVE, mirroring ``preview_moves``: present only when a move's
+            # delta scope was entirely red at baseline, so every genuinely
+            # test-vouched (or partial-red) session's dict is byte-identical.
+            data["baseline_red_moves"] = self.baseline_red_moves
         if self.pytest_missing:
             # Surface the LOUD message in --json too, so a machine consumer gets
             # the same actionable diagnostic the markdown shows (never a silent,
@@ -307,10 +331,17 @@ def _tier_for(step: Any) -> str:
       * ``no-suite`` — no detectable suite ran (``verified=False``; the
         ``mark_no_suite`` signal), applied with nothing to verify it.
 
+      * ``baseline-red`` — the move's delta-green scope was ENTIRELY red/ERROR
+        at baseline (``CompileStep.delta_vacuous``): the delta comparison could
+        vouch for nothing, even though ``verified`` (broke nothing new) reads
+        True — never blended with a genuine verified or weak tier.
+
     A move that FAILED its gate never reaches the steps list (it was rolled back),
     so these are the only tiers a reported move can hold."""
     if not getattr(step, "verified", False):
         return TIER_NO_SUITE
+    if getattr(step, "delta_vacuous", False):
+        return TIER_BASELINE_RED
     return TIER_VERIFIED if getattr(step, "coverage_verified", False) else TIER_WEAK
 
 
@@ -763,6 +794,12 @@ def _verification_lines(report: SessionReport) -> list[str]:
         parts.append(
             f"**{report.no_suite_moves} no-suite** (landed but the repo has no "
             f"detectable test suite — disclosed, not counted as green)")
+    if report.baseline_red_moves:
+        parts.append(
+            f"**{report.baseline_red_moves} baseline-red** (the whole scoped "
+            f"suite was already red/ERROR before this move — nothing could "
+            f"regress, but no test vouched for it either — disclosed, not "
+            f"counted as verified)")
     lines = ["Verification: " + ", ".join(parts) + ".",
              f"Full-suite backstop: {_backstop_phrase(report)}."]
     if report.regression_rolled_back:
@@ -819,6 +856,10 @@ def _render_summary(report: SessionReport) -> list[str]:
                 # never read as an applied tier (least of all "no-suite").
                 TIER_PREVIEW: ("🔍 preview — not applied yet; "
                                "will be test-verified on --apply"),
+                # The whole delta scope was already red/ERROR at baseline: never
+                # a checkmark — no test exercised this change green.
+                TIER_BASELINE_RED: ("🔶 baseline-red — unverifiable (scope "
+                                    "already all-red at baseline)"),
             }.get(mv.tier, "⚠️ no-suite")
             lines.append(f"{i}. {mv.description} — {tag}")
     lines += _tier_footnote(report)
@@ -891,13 +932,16 @@ def _nothing_landed_lines(report: SessionReport) -> list[str]:
 def _tier_footnote(report: SessionReport) -> list[str]:
     """Explain the non-verified tiers — ONLY when a move carries one, so a
     fully-verified report stays byte-identical (honesty, not a defect)."""
-    if not (report.weak_moves or report.no_suite_moves or report.preview_moves):
+    if not (report.weak_moves or report.no_suite_moves or report.preview_moves
+            or report.baseline_red_moves):
         return []
     note = ["", "Tiers:"]
     if report.weak_moves:
         note.append("- `weak` = applied and the suite is green, but NO test exercises this code, so Apex won't claim it's test-verified; add a test (or `apex shield`) to upgrade it.")
     if report.no_suite_moves:
         note.append("- `no-suite` = applied but no test suite exists to verify this code, so Apex won't claim it's test-verified; add a test (or `apex shield`) to upgrade it.")
+    if report.baseline_red_moves:
+        note.append("- `baseline-red` = applied, but the WHOLE scoped suite was already red/ERROR before this move, so nothing could regress — but no test vouched for it either; Apex won't claim it's test-verified.")
     if report.preview_moves:
         # A dry run applied NOTHING — the footnote must never claim otherwise
         # (the old no-suite mislabel said "applied but no test suite exists").

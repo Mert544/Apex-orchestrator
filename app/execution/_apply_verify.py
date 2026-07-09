@@ -20,15 +20,20 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
+from typing import Any
 
 __all__ = [
+    "DELTA_VACUOUS",
     "NO_SUITE",
     "VERIFICATION_UNAVAILABLE",
     "delta_green_disclosure",
     "delta_run_valid",
+    "delta_vacuous",
     "function_of",
+    "mark_delta_vacuous",
     "mark_no_suite",
     "mark_verification_unavailable",
+    "passed_count_of_text",
     "regressed_functions",
     "run_full_suite_verification",
     "stamp_coverage_strength",
@@ -47,6 +52,12 @@ __all__ = [
 # Matches both ``FAILED <node>`` and ``ERROR <node>``; the trailing ``- reason``
 # (if any) is stripped so the node id is the bare ``path::name`` token.
 _NODE_LINE = re.compile(r"^(?:FAILED|ERROR)\s+(\S+)", re.MULTILINE)
+
+# pytest's tail summary line names how many tests actually PASSED, e.g.
+# ``5 passed, 2 failed in 0.42s``. Mirrors ``_NODE_LINE``'s module-level
+# compiled-once pattern; used by :func:`passed_count_of_text` for the
+# vacuous-delta check below.
+_PASSED_LINE = re.compile(r"(\d+) passed")
 
 
 def _pytest_failing_cmd(root: Path) -> list[list[str]]:
@@ -75,6 +86,25 @@ def _pytest_failing_cmd(root: Path) -> list[list[str]]:
             cmd = [*cmd, "--continue-on-collection-errors"]
         out.append(cmd)
     return out
+
+
+def passed_count_of_text(text: str) -> int:
+    """The tail "N passed" count parsed from raw captured pytest output.
+
+    Takes the LAST ``\\d+ passed`` match, not the first: pytest prints a
+    FAILED test's own captured stdout/stderr (its "Captured stdout/stderr
+    call" section) BEFORE the final tail summary line, and that captured text
+    can itself contain an earlier ``\\d+ passed``-shaped substring (e.g. a
+    test that builds a literal pytest-output-style fixture string). The real
+    tail summary — the line this function must read — is always the LAST such
+    occurrence in the combined stream, so ``.search()`` (first match) could
+    silently return a spurious earlier count instead of the true (possibly
+    zero) tail count. Scanning to the last match is the conservative,
+    never-fake-green-preserving choice. Returns ``0`` when no such line is
+    present (e.g. a run that produced no passing tests at all, or collapsed
+    before its summary line). Pure — no clock/random, no I/O."""
+    matches = list(_PASSED_LINE.finditer(text))
+    return int(matches[-1].group(1)) if matches else 0
 
 
 def function_of(node_id: str) -> str:
@@ -472,6 +502,80 @@ def stamp_coverage_strength(
     return level
 
 
+# HONEST vacuous-delta tier. Delta-green correctly tolerates PRE-EXISTING red —
+# a move is never charged for a test that was already failing at baseline. But
+# when the baseline's failing set covers the ENTIRE scoped selection (every
+# selected node was already red/ERROR before the move) the comparison is
+# VACUOUS: nothing passed at baseline, so nothing can regress, and the move
+# sails through stamped as if a test vouched for it — when NO test actually
+# exercised the changed code green. This sentinel makes that distinct, loud,
+# and unmistakable (mirroring how ``NO_SUITE``/``baseline-red`` were added as
+# their own weakest tiers) so a vacuous delta can never be blended with a move
+# a genuinely test-vouched green suite proved. A deterministic fact, derived
+# purely from the baseline-failing set and the after-run's passed count — no
+# clock, no randomness.
+DELTA_VACUOUS = "baseline-red-unverifiable"
+
+
+def delta_vacuous(scope_baseline: frozenset[str], passed_after: int) -> bool:
+    """Was this delta comparison VACUOUS — the whole scoped selection already
+    red/ERROR at baseline, so the after-run could add no newly-passing evidence?
+
+    True only when the baseline had SOME failing/erroring node in scope
+    (``bool(scope_baseline)`` — an empty scope means there was nothing to be
+    entirely red, so it is never vacuous) AND the after-run passed ZERO tests
+    (``passed_after == 0``). A PARTIAL-red baseline (some scoped nodes green)
+    is excluded by construction: the after-run's passed count there reflects
+    those already-green nodes re-passing, which is genuine (if incomplete)
+    evidence — today's exact labels stay byte-identical. Pure — no clock,
+    no randomness, no I/O.
+
+    Note (conservative by construction): this is a proxy, not an exact
+    baseline-scope-is-100%-red test. A move that ADDS a new passing test
+    inside scope makes ``passed_after`` nonzero even when the ORIGINAL scope
+    was fully red, so the predicate under-labels in that case — but only ever
+    toward a missed honest label, NEVER toward a false "verified" (strictly
+    conservative, matching never-fake-green)."""
+    return bool(scope_baseline) and passed_after == 0
+
+
+def mark_delta_vacuous(out: dict) -> None:
+    """Stamp the "this delta comparison was VACUOUS" disclosure onto ``out``
+    (additive — touched ONLY when :func:`delta_vacuous` is True, so a
+    genuinely test-vouched move's result stays byte-identical).
+
+    MUST be called strictly AFTER :func:`stamp_coverage_strength` at each
+    verdict site: this function's dict-copy-and-update deliberately OVERRIDES
+    ``verification_strength.level`` to the honest ``DELTA_VACUOUS`` tier, so
+    calling it first would let the later coverage stamp clobber the vacuous
+    label back to ``function``/``module``/``none`` as if a test had genuinely
+    vouched for the change."""
+    out["delta_vacuous"] = True
+    strength = dict(out.get("verification_strength") or {})
+    strength["level"] = DELTA_VACUOUS
+    out["verification_strength"] = strength
+
+
+def _robust_passed_count(summary: Any) -> int:
+    """Total passed-test count for the vacuous-delta DECISION — deliberately
+    NOT ``proof_of_fix.summarize_test_run``'s ``tests_passed`` field.
+
+    That field is derived from ``_PASSED.search(text)`` (first match) per
+    result, purely informational until now; feeding it into a gating decision
+    would inherit its fragility (a failing test's own captured stdout/stderr
+    printed BEFORE pytest's tail summary line can contain an earlier
+    ``\\d+ passed``-shaped substring, which a first-match search would return
+    instead of the true tail count). This mirrors that function's per-result
+    loop shape but sums :func:`passed_count_of_text` (LAST-match, so it always
+    reads the true tail occurrence) over each command's combined
+    stdout+stderr. Pure — no clock/random, no I/O."""
+    total = 0
+    for res in getattr(summary, "results", None) or []:
+        text = (res.get("stdout") or "") + (res.get("stderr") or "")
+        total += passed_count_of_text(text)
+    return total
+
+
 def delta_green_disclosure(
     baseline_failing: frozenset[str], after_failing: frozenset[str]
 ) -> dict:
@@ -539,7 +643,8 @@ def _verify_delta_green(
             out, getattr(summary, "pytest_interpreter", ""))
         out["rolled_back"] = False
         return True
-    out["test_evidence"] = summarize_test_run(summary)
+    evidence = summarize_test_run(summary)
+    out["test_evidence"] = evidence
     if not getattr(summary, "commands", None):
         # No suite to run — not a RED baseline state; keep the no-suite disclosure.
         out["verified"] = False
@@ -567,6 +672,17 @@ def _verify_delta_green(
     if not introduced:
         if strength_inputs is not None:
             stamp_coverage_strength(root, out, *strength_inputs)
+        # VACUOUS-DELTA check: strictly AFTER the coverage stamp above (see
+        # ``mark_delta_vacuous``'s ordering note) — the whole scoped baseline
+        # was already red/ERROR, so no test could have vouched for this move
+        # even though it "verified" (broke nothing new). Uses
+        # ``_robust_passed_count`` (LAST-match), NOT ``evidence["tests_passed"]``
+        # (proof_of_fix.summarize_test_run's first-match count) — this is a
+        # gating decision, not mere disclosure, so it must not inherit that
+        # field's fragility to a decoy "N passed" substring in a failing
+        # test's own captured output.
+        if delta_vacuous(baseline_failing, _robust_passed_count(summary)):
+            mark_delta_vacuous(out)
         out["rolled_back"] = False
         return True
     return False
