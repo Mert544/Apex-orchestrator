@@ -109,7 +109,9 @@ def register_module_objective(
                     operator=operator,
                     target=f"{rel}:{suffix}",
                     description=description.format(rel=rel),
-                    build_plan=lambda r=rel, s=src: _plan_for(project_root, r, s),
+                    # Apply-time thunk reads FRESH disk: an earlier landed move may
+                    # have changed this file; scan-time text would be stale-refused.
+                    build_plan=lambda r=rel: plan_fn(project_root, r),
                 ))
         return out
 

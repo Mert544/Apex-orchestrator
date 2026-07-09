@@ -221,11 +221,16 @@ def test_modernize_content_plan_reuses_own_modules_source(tmp_path, monkeypatch)
     plan = moves[0].build_plan()
     assert plan.new_contents  # a real rewrite landed
 
-    # Today RED: `_content_plan` unconditionally re-reads the module from disk
-    # inside `build_plan`, even though `_modernize_candidates` already fetched
-    # its text via `_own_modules()`. After the fix, `build_plan` carries that
-    # cached source through and touches disk zero additional times.
-    assert len(read_calls) == reads_after_scan
+    # DELIBERATELY INVERTED from the first Stage-1 version (which pinned
+    # zero build_plan reads): carrying scan-time source into the APPLY-time
+    # thunk broke multi-move-per-file passes — the first landed move changes
+    # the file on disk, and every later same-file plan built from the stale
+    # scan text is (correctly) refused by the staleness gate, halving what a
+    # modernize pass lands (caught live by
+    # test_modernize_applied_result_is_pinned at the full gate). Scan-side
+    # detection keeps the source= reuse (that's the measured win); the
+    # apply-side thunk MUST re-read fresh disk — exactly one extra read.
+    assert len(read_calls) == reads_after_scan + 1
 
 
 # ── Test 8 (must stay GREEN: byte-identical suggest_inlines population) ──────

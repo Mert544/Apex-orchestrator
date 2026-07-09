@@ -596,8 +596,11 @@ def _modernize_moves(project_root: str | Path) -> list[Move]:
     for rel, op, label, fn, src in _modernize_candidates(project_root):
         moves.append(Move(
             operator=op, target=f"{rel}:{op}", description=f"{label} in {rel}",
-            build_plan=lambda r=rel, f=fn, t=label, s=src: _content_plan(
-                project_root, r, f, t, source=s),
+            # Apply-time thunk reads FRESH disk (no s=src capture): an earlier
+            # landed move may have changed this same file, and a plan built
+            # from scan-time text would be refused by the staleness gate.
+            build_plan=lambda r=rel, f=fn, t=label: _content_plan(
+                project_root, r, f, t),
         ))
     return moves
 
@@ -705,8 +708,8 @@ def _bool_return_moves(project_root: str | Path) -> list[Move]:
             moves.append(Move(
                 operator="simplify_bool_return", target=f"{rel}:bool-return",
                 description=f"simplify boolean returns in {rel}",
-                build_plan=lambda r=rel, s=src: plan_simplify_bool_return(
-                    project_root, r, source=s),
+                build_plan=lambda r=rel: plan_simplify_bool_return(
+                    project_root, r),
             ))
     return moves
 
@@ -779,8 +782,8 @@ def _import_sort_moves(project_root: str | Path) -> list[Move]:
             moves.append(Move(
                 operator="sort_imports", target=f"{rel}:sort-imports",
                 description=f"sort the import block in {rel}",
-                build_plan=lambda r=rel, s=src: plan_sort_imports(
-                    project_root, r, source=s),
+                build_plan=lambda r=rel: plan_sort_imports(
+                    project_root, r),
             ))
     return moves
 
@@ -819,8 +822,8 @@ def _comprehension_moves(project_root: str | Path) -> list[Move]:
             moves.append(Move(
                 operator="simplify_comprehension", target=f"{rel}:comprehension",
                 description=f"simplify accumulator loops in {rel}",
-                build_plan=lambda r=rel, s=src: plan_simplify_comprehension(
-                    project_root, r, source=s),
+                build_plan=lambda r=rel: plan_simplify_comprehension(
+                    project_root, r),
             ))
     return moves
 
@@ -859,8 +862,8 @@ def _unused_import_moves(project_root: str | Path) -> list[Move]:
             moves.append(Move(
                 operator="remove_unused_imports", target=f"{rel}:unused-import",
                 description=f"remove unused imports in {rel}",
-                build_plan=lambda r=rel, s=src: plan_remove_unused_imports(
-                    project_root, r, source=s),
+                build_plan=lambda r=rel: plan_remove_unused_imports(
+                    project_root, r),
             ))
     return moves
 
