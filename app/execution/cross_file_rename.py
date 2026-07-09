@@ -21,6 +21,7 @@ Deterministic, stdlib-only.
 from __future__ import annotations
 
 import ast
+import base64
 import difflib
 import json
 import keyword
@@ -462,7 +463,34 @@ def plan_rename(project_root: str | Path, old: str, new: str) -> RenamePlan:
     return plan
 
 
-def _rollback(root: Path, plan: RenamePlan, created: list[str]) -> None:
+def _capture_raw_originals(root: Path, plan: RenamePlan,
+                           created: list[str]) -> dict[str, bytes]:
+    """Every pre-existing target's CURRENT on-disk bytes, for byte-exact
+    rollback — captured once, immediately after ``created`` is known, before
+    the journal write and before any tree write (the narrowest possible
+    window; no wider than the text-mode design already tolerated, see the
+    module's rollback risk notes).
+
+    Iterates ``plan.originals`` (the same domain :func:`_rollback` restores)
+    so a created-but-double-tracked file (``plan.originals[rel] == ""``) is
+    naturally excluded via ``created``, never desynced. A created file (no
+    original to restore) or an unreadable path is simply omitted — the
+    caller then falls back to ``plan.originals`` text for that file
+    (fail-closed: absence here never crashes a rollback)."""
+    made = set(created)
+    out: dict[str, bytes] = {}
+    for rel in plan.originals:
+        if rel in made:
+            continue
+        try:
+            out[rel] = (root / rel).read_bytes()
+        except OSError:
+            continue
+    return out
+
+
+def _rollback(root: Path, plan: RenamePlan, created: list[str],
+             raw_originals: dict[str, bytes] | None = None) -> None:
     """Restore edited files to their originals and delete files the plan created
     (a never-existed file has no original, so it must be removed, not rewritten).
 
@@ -471,11 +499,23 @@ def _rollback(root: Path, plan: RenamePlan, created: list[str]) -> None:
     pin_doctest, …). So restore ONLY pre-existing files — those in ``originals``
     but NOT ``created`` — and delete EVERY created file regardless of its
     ``originals`` membership; otherwise a created file would be rewritten empty
-    (step 1) and then skipped by the delete (step 2), leaking a 0-byte artifact."""
+    (step 1) and then skipped by the delete (step 2), leaking a 0-byte artifact.
+
+    ``raw_originals`` (default ``None`` ⇒ byte-identical to before) is the
+    :func:`_capture_raw_originals` map of exact pre-apply bytes; when a
+    file's raw bytes were captured, restore writes THOSE bytes
+    (``write_bytes``) so CRLF/BOM/no-trailing-newline originals come back
+    exactly instead of being normalized through ``plan.originals`` text. A
+    file absent from ``raw_originals`` (never captured, or capture failed)
+    degrades to the original text-mode restore — never a crash."""
     made = set(created)
     for rel, original in plan.originals.items():
         if rel not in made:  # only un-edit files that existed before the plan
-            (root / rel).write_text(original, encoding="utf-8")
+            raw_bytes = (raw_originals or {}).get(rel)
+            if raw_bytes is not None:
+                (root / rel).write_bytes(raw_bytes)
+            else:
+                (root / rel).write_text(original, encoding="utf-8")
     for rel in created:
         if (root / rel).exists():
             try:
@@ -625,7 +665,8 @@ def _scoped_delta_verdict(proc: object, impacted: list[str], plan: RenamePlan,
 
 
 def _withhold_uncovered(root: Path, plan: RenamePlan, created: list[str],
-                        out: dict, tier: int = 0) -> bool:
+                        out: dict, tier: int = 0,
+                        raw_originals: dict[str, bytes] | None = None) -> bool:
     """COVERED-ONLY gate (opt-in): roll back a move whose green suite cannot
     actually VOUCH for the change at its risk ``tier``, and report it as withheld
     — not failed. True when the move was withheld (so the caller returns the
@@ -643,7 +684,7 @@ def _withhold_uncovered(root: Path, plan: RenamePlan, created: list[str],
 
     if coverage_verifies(tier, str(out.get("coverage") or "none")):
         return False
-    _rollback(root, plan, created)
+    _rollback(root, plan, created, raw_originals)
     out.update(applied=False, rolled_back=True, withheld_uncovered=True,
                reason="withheld (covered-only): no test exercises this change at "
                       "the level its risk needs — previewed, not landed "
@@ -651,8 +692,8 @@ def _withhold_uncovered(root: Path, plan: RenamePlan, created: list[str],
     return True
 
 
-def _write_pending_journal(root: Path, plan: RenamePlan,
-                           created: list[str]) -> Path:
+def _write_pending_journal(root: Path, plan: RenamePlan, created: list[str],
+                           raw_originals: dict[str, bytes] | None = None) -> Path:
     """Persist an on-disk intent record BEFORE the tree is touched.
 
     A per-move apply writes the planned files and only then verifies — a hard
@@ -663,15 +704,34 @@ def _write_pending_journal(root: Path, plan: RenamePlan,
     human — or a future reconcile pass — can restore byte-exactly. It is
     written to ``.apex/`` (already scan-excluded), cleared the moment the move
     SETTLES (kept, rolled back, or declined), and deterministic (sorted keys,
-    no clock)."""
+    no clock).
+
+    ``changed`` stays exactly as before (universal-newline TEXT, ``null`` for
+    a created file) so a naive/future reader that only understands this key
+    degrades to today's behaviour, never worse. When ``raw_originals`` (the
+    :func:`_capture_raw_originals` map) holds a file whose captured bytes
+    differ from ``plan.originals[rel]`` re-encoded as UTF-8 — i.e. a CRLF/BOM/
+    no-trailing-newline original that ``changed``'s text form would lose — an
+    ADDITIVE sibling key ``changed_b64`` records that file's exact bytes,
+    base64-encoded (ASCII-safe for JSON), keyed by the same relative path.
+    ``changed_b64`` takes PRECEDENCE over ``changed`` for a reconcile reader
+    that understands it; omitted entirely when empty, so a plain-LF apply's
+    journal is byte-identical to before this field existed."""
     path = root / ".apex" / "pending-apply.json"
     path.parent.mkdir(parents=True, exist_ok=True)
+    changed_b64 = {
+        rel: base64.b64encode(raw).decode("ascii")
+        for rel, raw in (raw_originals or {}).items()
+        if raw != (plan.originals.get(rel) or "").encode("utf-8")
+    }
     payload = {
         "schema": "apex-pending-apply/1",
         "changed": {rel: plan.originals.get(rel)
                     for rel in sorted(plan.new_contents)},
         "created": sorted(created),
     }
+    if changed_b64:
+        payload["changed_b64"] = changed_b64
     path.write_text(json.dumps(payload, indent=2, sort_keys=True),
                     encoding="utf-8")
     return path
@@ -750,18 +810,27 @@ def apply_rename(project_root: str | Path, plan: RenamePlan, verify: bool = True
     # them — restoring `originals` only un-edits files that were already there;
     # a never-existed file has no original to restore and must be removed.
     created = [rel for rel in plan.new_contents if not (root / rel).exists()]
+    # BYTE-EXACT ROLLBACK CAPTURE: raw originals are read as bytes immediately
+    # after ``created`` is known — before the journal write and before any
+    # tree write — so a later rollback restores CRLF/BOM/no-trailing-newline
+    # originals exactly instead of losing them through universal-newline text
+    # (:func:`_capture_raw_originals`). Fail-closed: a file that can't be read
+    # as bytes here is simply absent, and every downstream rollback path
+    # degrades to the existing ``plan.originals`` text restore for it.
+    raw_originals = _capture_raw_originals(root, plan, created)
     # INTERRUPT SAFETY (audit 2026-07-08): the intent journal lands on disk
     # BEFORE the tree is touched, and the write+verify window is guarded so a
     # KeyboardInterrupt/SIGTERM mid-verify rolls the move back byte-exactly and
     # re-raises — the tree is never left silently modified by a cancelled run.
     # Only a hard kill (SIGKILL/OOM) can escape the guard, and then the journal
     # remains as the honest, reconcilable record of exactly what was in flight.
-    journal = _write_pending_journal(root, plan, created)
+    journal = _write_pending_journal(root, plan, created, raw_originals)
     try:
         return _write_verify_settle(root, plan, created, verify, impact_scope,
-                                    covered_only, tier, baseline_failing)
+                                    covered_only, tier, baseline_failing,
+                                    raw_originals)
     except BaseException:
-        _rollback(root, plan, created)
+        _rollback(root, plan, created, raw_originals)
         raise
     finally:
         _clear_pending_journal(journal)
@@ -770,10 +839,13 @@ def apply_rename(project_root: str | Path, plan: RenamePlan, verify: bool = True
 def _write_verify_settle(root: Path, plan: RenamePlan, created: list[str],
                          verify: bool, impact_scope: bool, covered_only: bool,
                          tier: int,
-                         baseline_failing: frozenset[str] | None) -> dict:
+                         baseline_failing: frozenset[str] | None,
+                         raw_originals: dict[str, bytes] | None = None) -> dict:
     """The write→verify→settle body of :func:`apply_rename`, extracted so the
     caller can wrap it in the interrupt guard (and stay under the complexity
-    ceiling). Behaviour byte-identical to the previously-inline tail."""
+    ceiling). Behaviour byte-identical to the previously-inline tail (the APPLY
+    write below stays text — only rollback of ORIGINALS needs to be byte-exact,
+    via ``raw_originals`` threaded to every rollback call)."""
     for rel, content in plan.new_contents.items():
         (root / rel).parent.mkdir(parents=True, exist_ok=True)
         (root / rel).write_text(content, encoding="utf-8")
@@ -799,7 +871,8 @@ def _write_verify_settle(root: Path, plan: RenamePlan, created: list[str],
     # covered-only gate is applied on this path too, not just the full-suite tail.
     if impact_scope:
         scoped = _verify_impact_scope(root, plan, created, out, strength_inputs,
-                                      covered_only, tier, baseline_failing)
+                                      covered_only, tier, baseline_failing,
+                                      raw_originals)
         if scoped is not None:
             return scoped
 
@@ -810,9 +883,9 @@ def _write_verify_settle(root: Path, plan: RenamePlan, created: list[str],
         # it is the false-green blind spot — withhold it (roll back, report
         # ``withheld_uncovered``) rather than land it. Off ⇒ byte-identical.
         if covered_only:
-            _withhold_uncovered(root, plan, created, out, tier)
+            _withhold_uncovered(root, plan, created, out, tier, raw_originals)
         return out
-    _rollback(root, plan, created)
+    _rollback(root, plan, created, raw_originals)
     out.update(applied=False, rolled_back=True,
                reason="tests failed after rename; all files restored")
     return out
@@ -822,6 +895,7 @@ def _verify_impact_scope(root: Path, plan: RenamePlan, created: list[str],
                          out: dict, strength_inputs, covered_only: bool = False,
                          tier: int = 0,
                          baseline_failing: frozenset[str] | None = None,
+                         raw_originals: dict[str, bytes] | None = None,
                          ) -> dict | None:
     """The impact-scoped verification tail of :func:`apply_rename`, extracted to
     keep that function under the complexity ceiling (behaviour byte-identical when
@@ -854,9 +928,9 @@ def _verify_impact_scope(root: Path, plan: RenamePlan, created: list[str],
         # COVERED-ONLY: a smoke-only import stamps ``module``, a false green for a
         # Tier-1 behaviour change — withhold it here too. Off ⇒ byte-identical.
         if covered_only:
-            _withhold_uncovered(root, plan, created, out, tier)
+            _withhold_uncovered(root, plan, created, out, tier, raw_originals)
         return out
-    _rollback(root, plan, created)
+    _rollback(root, plan, created, raw_originals)
     out.update(applied=False, rolled_back=True,
                reason="impacted tests failed after change; files restored")
     return out

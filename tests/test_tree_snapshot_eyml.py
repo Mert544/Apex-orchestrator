@@ -31,6 +31,11 @@ def _tree(root: Path) -> Path:
 def test_snapshot_captures_only_py_files_sorted(tmp_path: Path):
     _tree(tmp_path)
     snap = snapshot_py_tree(tmp_path)
+    # Captured as str (decoded losslessly from raw bytes via surrogateescape)
+    # so CRLF/BOM/missing trailing newline still round-trip exactly through
+    # restore_py_tree, while every text-based consumer (develop_session's
+    # difflib-based _diff_snapshots, the objective-compiler backstop's dict
+    # equality) keeps working unmodified.
     assert snap == {"pkg/a.py": "x = 1\n", "pkg/b.py": "y = 2\n"}
     # Deterministic: same tree in -> same mapping out, twice.
     assert snapshot_py_tree(tmp_path) == snap
