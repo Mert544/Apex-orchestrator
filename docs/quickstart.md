@@ -128,7 +128,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0          # full history so the diff review can find the base
-      - uses: Mert544/Apex-orchestrator@v1
+      # No release tag exists yet — pin the action to a commit SHA (or
+      # copy .github/workflows/apex-ci.yml, which installs Apex from its
+      # GitHub source automatically). Replace with @v1 once tagged.
+      - uses: Mert544/Apex-orchestrator@main
         with:
           base: origin/${{ github.base_ref }}   # diff-scoped review (omit to grade only)
           min-score: '0'                          # raise to fail the build below a grade

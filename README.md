@@ -26,6 +26,10 @@ Apex profiles your project, proposes a grounded engineering roadmap, and applies
 
 ---
 
+**Proof, not promises:** a [live pilot on a real merged PR](docs/rnd/live-pilot-pr4.md) and a
+[10-package external validation fleet](docs/rnd/external-validation-fleet.md) (43 verified
+moves, 0 rolled back). One command to see your own project's picture: `apex quickstart`.
+
 ## ⚡ In 30 seconds
 
 ```bash
@@ -145,7 +149,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }            # full history for the diff review
-      - uses: Mert544/Apex-orchestrator@v1
+      # No release tag exists yet — pin the action to a commit SHA (or
+      # copy .github/workflows/apex-ci.yml, which installs Apex from its
+      # GitHub source automatically). Replace with @v1 once tagged.
+      - uses: Mert544/Apex-orchestrator@main
         with:
           min-score: "80"                   # fail the PR if the grade drops below 80
           base: origin/${{ github.base_ref }}

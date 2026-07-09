@@ -1789,10 +1789,10 @@ def _record_backstop_ledger_correction(
     attribution (which campaign/objective produced this correction) — that
     field has no ``should_avoid`` consumer, so overloading it is safe.
 
-    KNOWN, OUT-OF-FENCE gap (do not fix here): ``develop_session.
-    _session_proof_records`` (a genuine LANDING record, not a correction) still
-    stamps ``finding.action = obj.objective`` — the SAME objective-name-as-action
-    mismatch this function used to have. It is pre-existing, unrelated to the
+    HISTORY NOTE (resolved): ``develop_session._session_proof_records`` and
+    ``dream_develop._dream_proof_records`` shared the objective-name-as-action
+    mismatch until the W4B wave fixed both to this same operator convention
+    (commit bb73fd8). This note replaces the old out-of-fence warning about the
     backstop-correction contract this function owns, and is out of this wave's
     fence; tracked as a follow-up.
 
