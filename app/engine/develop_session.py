@@ -606,24 +606,39 @@ def _restore_and_zero(
     # The tree is back at baseline: drop every landed move so the artifact
     # reflects the rollback, not phantom contributions.
     for obj in report.objectives:
-        if obj.moves and failed:
-            obj.blocked.append(
-                "backstop restore: restore incomplete "
-                f"({len(failed)} file(s): {', '.join(failed)}) — ledger "
-                "correction withheld — a false 'rolled_back' record would be "
-                "worse than none")
-        elif obj.moves and not ok:
-            obj.blocked.append(
-                "backstop restore: could not correct the proof ledger — "
-                "should_avoid/fragility will NOT learn from this session "
-                "rollback")
-        if obj.moves and swept_native:
-            obj.blocked.append(
-                "backstop restore: native-experience memory for "
-                f"{len(swept_native)} idiom shape(s) "
-                f"({', '.join(swept_native)}) was already recorded before "
-                "the rollback and could NOT be un-recorded")
+        _disclose_session_backstop(obj, failed, ok, swept_native)
         obj.moves = []
+
+
+def _disclose_session_backstop(
+    obj: SessionObjective, failed: list[str], ok: bool,
+    swept_native: list[str],
+) -> None:
+    """Append :func:`_restore_and_zero`'s per-objective disclosures to
+    ``obj.blocked`` — restore-incomplete/withheld-correction, failed
+    correction write, and un-retractable native-experience pollution, each
+    with the ``"backstop restore:"`` prefix ``render_session_markdown``'s
+    dedicated section surfaces. Pure extraction from ``_restore_and_zero``
+    (behavior byte-identical) to keep both under the complexity ceiling."""
+    if not obj.moves:
+        return
+    if failed:
+        obj.blocked.append(
+            "backstop restore: restore incomplete "
+            f"({len(failed)} file(s): {', '.join(failed)}) — ledger "
+            "correction withheld — a false 'rolled_back' record would be "
+            "worse than none")
+    elif not ok:
+        obj.blocked.append(
+            "backstop restore: could not correct the proof ledger — "
+            "should_avoid/fragility will NOT learn from this session "
+            "rollback")
+    if swept_native:
+        obj.blocked.append(
+            "backstop restore: native-experience memory for "
+            f"{len(swept_native)} idiom shape(s) "
+            f"({', '.join(swept_native)}) was already recorded before "
+            "the rollback and could NOT be un-recorded")
 
 
 def _maybe_rollback_regression(
