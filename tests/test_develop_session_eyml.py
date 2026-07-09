@@ -17,6 +17,7 @@ orchestrates it across a fixed list and folds the landed plans into one report.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from app.engine.develop_session import (
@@ -275,6 +276,37 @@ def test_report_dict_is_serialisable_and_complete():
     assert d["total_moves"] == 1 and d["verified_moves"] == 1
     assert d["no_suite_moves"] == 0
     assert d["objectives"][0]["moves"][0]["tier"] == TIER_VERIFIED
+
+
+def test_session_move_native_shapes_field_default():
+    # ADDITIVE-FIELD CONTRACT (cannot be red-first: the field is new) — the
+    # session-level mirror of objective_compiler's ``CompileStep.native_shapes``
+    # pin (W3A-L4 finding 3).
+    mv = SessionMove("x", "y", "z", "d", TIER_VERIFIED)
+    assert mv.native_shapes == ()
+    assert "native_shapes" not in mv.to_dict()  # internal bookkeeping, never serialized
+
+
+def test_collect_objective_threads_native_shapes():
+    # RED-FIRST (HIGH, W3A-L4 finding 3): ``CompileStep.native_shapes`` was
+    # silently DISCARDED in the CompileStep -> SessionMove conversion
+    # (``_collect_objective``), so a session-level backstop rollback had no
+    # evidence at all of native-experience pollution to disclose — the
+    # campaign-level disclosure (``objective_compiler._backstop_restore``) had
+    # no session-path counterpart.
+    from app.engine.develop_session import _collect_objective
+    from app.engine.objective_compiler import CompileResult, CompileStep
+
+    result = CompileResult(objective="implement-stub", fitness_start=1.0,
+                           fitness_end=0.0, applied=True)
+    result.steps = [CompileStep(
+        operator="implement_stub", target="pkg/a.py:f", description="d",
+        fitness_before=1.0, fitness_after=0.0, verified=True, coverage="module",
+        native_shapes=("2:p0 + p1",))]
+
+    obj = _collect_objective(result)
+
+    assert obj.moves[0].native_shapes == ("2:p0 + p1",)
 
 
 def test_dry_run_lists_moves_without_writing(tmp_path: Path):
@@ -1178,13 +1210,21 @@ def test_green_baseline_self_inflicted_red_byte_restores_whole_tree(
     assert "every objective is already satisfied" not in md
 
 
-def test_green_baseline_self_inflicted_red_writes_no_proof(
+def test_green_baseline_self_inflicted_red_writes_rolled_back_proof(
         tmp_path: Path, monkeypatch):
-    # CO-TENANT SYNERGY (Batch 1 proof wiring): the green-baseline rollback zeroes
-    # obj.moves -> report.total_moves == 0, and the proof writer is gated on
-    # total_moves, so a self-inflicted-RED --apply session writes NO
-    # proof-of-fix.json (no held value to record). We drive the SAME CLI helper the
-    # proof wiring uses and confirm nothing is written.
+    # CONTRACT CHANGE (W3A-L4, backstop-rollback ledger correction — see
+    # tests/test_develop_session_proof.py::test_session_rolled_back_writes_no_proof's
+    # docstring for the full rationale, which applies identically here):
+    # ``_restore_and_zero`` is the SHARED core of BOTH session-level rollbacks —
+    # this GREEN-baseline self-inflicted-RED path and the RED-baseline transitive-
+    # regression path — so it now ALSO leaves a correction proof behind, honestly
+    # recording the swept moves as ``rolled_back`` (never ``applied``), feeding
+    # should_avoid/fragility instead of leaving the ledger silent. This pin used to
+    # assert NO ``.apex`` dir was created at all; it now asserts the correction
+    # record exists and is honest (never fakes a landing). The CLI writer
+    # (``_develop_session_write_proof``, gated on ``total_moves``) still writes
+    # NOTHING itself — ``total_moves == 0``, no held value — so we drive it too and
+    # confirm it adds no NEW landed record on top of the engine's own correction.
     from app.cli_autonomy import _develop_session_write_proof
     from app.engine import develop_session as ds
 
@@ -1195,15 +1235,25 @@ def test_green_baseline_self_inflicted_red_writes_no_proof(
     assert report.self_inflicted_red is True
     assert report.total_moves == 0
 
-    # The proof writer is gated on (apply AND total_moves); total_moves==0 -> it
-    # writes nothing. (build_session_proof / the proof helpers are UNCHANGED.)
+    # The CLI proof writer is gated on (apply AND total_moves); total_moves==0 ->
+    # it writes nothing ON TOP of what the engine's own correction already wrote.
     class _Args:
         apply = True
         json = False
 
     _develop_session_write_proof(_Args(), report, tmp_path)
-    assert not (tmp_path / ".apex" / "proof-of-fix.json").exists()
-    assert not (tmp_path / ".apex").exists()
+    proof_path = tmp_path / ".apex" / "proof-of-fix.json"
+    assert proof_path.exists()
+    proof = json.loads(proof_path.read_text(encoding="utf-8"))
+    assert proof["mode"] == "develop-session-backstop"
+    assert proof["fixes"]
+    assert all(f["outcome"] == "rolled_back" for f in proof["fixes"])
+    assert proof["totals"]["applied"] == 0
+    # NEVER-FAKE-GREEN preserved: value_landed still reads it as no value landed,
+    # even though a proof file now exists (a rolled_back-only fixes list scores
+    # zero landed value).
+    from app.engine.value_landed import value_landed
+    assert value_landed(proof)["verdict"] == "no value landed"
 
 
 def test_green_baseline_all_succeed_does_not_over_rollback(
@@ -1331,6 +1381,41 @@ def test_red_baseline_transitive_rollback_message_unchanged():
     assert "tests/test_wrapper.py::test_missing_is_blank" in md
     assert "the session landed work that REGRESSED a previously-green test" in md
     assert "self-inflicted" not in md
+
+
+def test_render_session_markdown_ignores_ordinary_blocked_reasons():
+    # NON-REGRESSION PIN (W3A-L4 finding 2): render_session_markdown must NOT
+    # surface an ORDINARY blocked reason (it never did, and must not start now)
+    # — only prefix-matched "backstop restore:" disclosures earn the new
+    # dedicated section, so a session with mundane refusals renders
+    # byte-identically to before this fix.
+    report = SessionReport(applied=True)
+    obj = SessionObjective(objective="dead-params")
+    obj.blocked = ["pkg/x.py: could not find a serviceable candidate"]
+    report.objectives = [obj]
+
+    md = render_session_markdown(report)
+    assert "Backstop disclosures" not in md
+    assert "could not find a serviceable candidate" not in md
+
+
+def test_render_session_markdown_surfaces_backstop_correction_disclosures():
+    # RED-FIRST (CRITICAL disclosure, W3A-L4 finding 2): a backstop-correction
+    # disclosure lands in ``obj.blocked`` (the ONLY channel — see
+    # ``_restore_and_zero``) but ``render_session_markdown`` never read
+    # ``.blocked`` AT ALL, so a correction-failure verdict was silently
+    # invisible to the buyer artifact.
+    report = SessionReport(applied=True)
+    obj = SessionObjective(objective="dead-params")
+    obj.blocked = [
+        "backstop restore: could not correct the proof ledger — "
+        "should_avoid/fragility will NOT learn from this session rollback",
+    ]
+    report.objectives = [obj]
+
+    md = render_session_markdown(report)
+    assert "## Backstop disclosures" in md
+    assert "correct the proof ledger" in md
 
 
 def test_self_inflicted_red_field_serialises(tmp_path: Path, monkeypatch):

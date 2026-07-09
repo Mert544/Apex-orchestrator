@@ -37,6 +37,7 @@ from pathlib import Path
 from app.engine.develop_session import (
     SessionReport,
     build_session_proof,
+    render_session_markdown,
     run_develop_session,
 )
 from app.engine.proof_of_fix import (
@@ -220,8 +221,25 @@ def test_session_dry_run_writes_no_proof(tmp_path):
     assert after == before  # the source tree is byte-identical after a dry run
 
 
-# --- 4. never-fake-green: a fully-rolled-back session writes NO proof ---------
-
+# --- 4. never-fake-green: a fully-rolled-back session RECORDS the rollback ----
+#
+# CONTRACT CHANGE (W3A-L4, "Rüya/bağışıklık — backstop rollbacks feed the
+# experience memory"): this test USED TO pin that a rolled-back session writes
+# NO proof-of-fix.json at all. That literal assertion is DELIBERATELY inverted
+# here, on purpose, in this same wave. The gap it exposed: a per-move rollback in
+# the maintain path already gets recorded with ``outcome: "rolled_back"`` (feeding
+# ``should_avoid``/fragility via ``counterfactual_learning``/``proof_history``),
+# but a CAMPAIGN-LEVEL backstop rollback wrote NOTHING — positive or negative —
+# so the organism could never learn "this was tried here and it broke something."
+# The FIX (``develop_session._restore_and_zero`` -> the shared, fail-closed
+# ``objective_compiler._record_backstop_ledger_correction`` writer) makes the
+# session's OWN rollback feed that same ledger. The INTENT the old assertion
+# protected — never falsely claim a fake landing — is the one invariant that
+# still matters and is now the LOAD-BEARING check: every record's ``outcome`` is
+# ``rolled_back`` (never ``applied``), ``totals.applied == 0``, and
+# ``value_landed`` still reads "no value landed". Never-fake-green is
+# STRENGTHENED (the rollback is now honestly disclosed to the ledger), not
+# violated (nothing is claimed to have landed).
 def test_session_rolled_back_writes_no_proof(tmp_path):
     _transitive_regression_project(tmp_path)
     check_before = (tmp_path / "pkg" / "check.py").read_text(encoding="utf-8")
@@ -229,9 +247,22 @@ def test_session_rolled_back_writes_no_proof(tmp_path):
     rc = _run_session_cli(tmp_path, apply=True)
     assert rc == 0
     # The session detected a transitive regression and rolled the WHOLE thing
-    # back: nothing held, so total_moves is 0 and NO proof was written — even
-    # though a behaviour-changing move DID momentarily apply (not an empty repo).
-    assert not (tmp_path / ".apex" / "proof-of-fix.json").exists()
+    # back: nothing held, so total_moves is 0 — and the CLI's own proof writer
+    # (gated on total_moves) writes nothing new — but the ENGINE's backstop
+    # correction DOES leave a ledger entry, honestly recording the swept, reverted
+    # move as ``rolled_back`` (never as a fake "applied" landing).
+    proof_path = tmp_path / ".apex" / "proof-of-fix.json"
+    assert proof_path.exists()
+    proof = json.loads(proof_path.read_text(encoding="utf-8"))
+    assert proof["schema"] == SCHEMA
+    assert proof["mode"] == "develop-session-backstop"
+    assert proof["fixes"]
+    assert all(f["outcome"] == "rolled_back" for f in proof["fixes"])
+    assert proof["totals"]["applied"] == 0
+    assert proof["totals"]["rolled_back"] == len(proof["fixes"])
+    # NEVER-FAKE-GREEN preserved: a proof now exists, but it still scores zero
+    # landed value — the honest inverse of "applied", not a disguised landing.
+    assert value_landed(proof)["verdict"] == "no value landed"
     # The modernize change was UN-landed: check.py is byte-for-byte its baseline.
     assert (tmp_path / "pkg" / "check.py").read_text(encoding="utf-8") == check_before
 
@@ -247,6 +278,121 @@ def test_session_rolled_back_report_emits_no_records(tmp_path):
     assert proof["fixes"] == []
     assert proof["totals"]["applied"] == 0
     assert value_landed(proof)["verdict"] == "no value landed"
+
+
+def test_session_backstop_correction_write_failure_discloses(tmp_path, monkeypatch):
+    # PRE-FIX: the disclosure function doesn't exist yet, so this pins the
+    # fail-closed contract going forward (W3A-L4's ``_record_backstop_ledger_
+    # correction``, mirroring the standalone-campaign version in
+    # test_campaign_regression_backstop_eyml.py). A ledger-write failure must
+    # never block the session-level restore itself — the rollback still happens,
+    # and the failure is disclosed loudly via the EXISTING ``obj.blocked`` channel
+    # (no new ``SessionReport``/``SessionObjective`` field).
+    from app.engine import develop_session as ds
+
+    _transitive_regression_project(tmp_path)
+    monkeypatch.setattr(ds, "_record_backstop_ledger_correction",
+                        lambda *a, **kw: False)
+    report = run_develop_session(str(tmp_path), apply=True, verify=True)
+
+    assert report.regression_rolled_back is True
+    assert report.total_moves == 0  # the restore itself is unaffected
+    assert not (tmp_path / ".apex" / "proof-of-fix.json").exists()
+    assert any(
+        "could not correct the proof ledger" in b
+        for obj in report.objectives for b in obj.blocked)
+
+
+def test_render_session_markdown_surfaces_backstop_correction_failure(
+        tmp_path, monkeypatch):
+    # RED-FIRST (CRITICAL disclosure, W3A-L4 finding 2) — the reviewer's exact
+    # repro: monkeypatch the ledger-correction writer to fail, run the SAME
+    # transitive-regression session fixture that genuinely rolls back, and
+    # confirm the failure — which lands on ``obj.blocked`` — actually reaches
+    # the rendered buyer artifact. Pre-fix, ``render_session_markdown`` never
+    # read ``.blocked`` at all, so this failure was silently invisible even
+    # though the session correctly rolled the tree back.
+    from app.engine import develop_session as ds
+
+    _transitive_regression_project(tmp_path)
+    monkeypatch.setattr(ds, "_record_backstop_ledger_correction",
+                        lambda *a, **kw: False)
+    report = run_develop_session(str(tmp_path), apply=True, verify=True)
+
+    assert report.regression_rolled_back is True
+    md = render_session_markdown(report)
+    assert "correct the proof ledger" in md
+
+
+def test_restore_and_zero_discloses_unrecorded_native_experience(tmp_path):
+    # RED-FIRST (HIGH, W3A-L4 finding 3): the native-experience pollution
+    # disclosure existed only at the CAMPAIGN level
+    # (``objective_compiler._backstop_restore``) with no session-path
+    # counterpart — a native-only fill landed and verified through
+    # ``run_develop_session`` (recording into the append-only
+    # ``native_proof_memory``) before a LATER objective's regression rolled the
+    # whole session back, and the swept native experience went undisclosed.
+    # This drives ``_restore_and_zero`` directly (deterministic, no need to
+    # reverse-engineer the native-mind discovery heuristics) with a synthetic
+    # held move that already carries ``native_shapes`` — exactly what
+    # ``_collect_objective`` threads from a real ``CompileStep``.
+    from app.engine.develop_session import (
+        SessionMove,
+        SessionObjective,
+        SessionReport,
+        TIER_VERIFIED,
+        _restore_and_zero,
+        _snapshot,
+    )
+
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "a.py").write_text("x = 1\n", encoding="utf-8")
+    before = _snapshot(tmp_path)
+    (tmp_path / "pkg" / "a.py").write_text("x = 2\n", encoding="utf-8")
+    after = _snapshot(tmp_path)
+
+    report = SessionReport(applied=True)
+    obj = SessionObjective(objective="implement-stub", moves=[
+        SessionMove("implement-stub", "implement_stub", "pkg/a.py:f",
+                   "fill f natively", TIER_VERIFIED,
+                   native_shapes=("2:p0 + p1",)),
+    ])
+    report.objectives = [obj]
+
+    _restore_and_zero(report, tmp_path, before, after)
+
+    assert report.regression_rolled_back is True
+    assert obj.moves == []  # the tree is back at baseline: no phantom holds
+    assert (tmp_path / "pkg" / "a.py").read_text(encoding="utf-8") == "x = 1\n"
+    assert any(
+        "native-experience" in b and "2:p0 + p1" in b for b in obj.blocked)
+
+
+def test_session_restore_withholds_correction_when_tree_restore_incomplete(
+        tmp_path, monkeypatch):
+    # RED-FIRST (LOW but never-fake-green, W3A-L4 finding 5): a byte-restore
+    # failure reported by ``restore_py_tree`` must WITHHOLD the session-level
+    # ledger correction entirely (never write a "rolled_back" record for a tree
+    # that is not provably back at baseline) and disclose the incompleteness
+    # instead. Mirrors the campaign-level pin in
+    # test_campaign_regression_backstop_eyml.py.
+    from app.engine import develop_session as ds
+
+    _transitive_regression_project(tmp_path)
+    real_restore = ds.restore_py_tree
+
+    def _flaky_restore(root, before, after):
+        failed = real_restore(root, before, after)
+        return sorted({*failed, "pkg/check.py"})
+
+    monkeypatch.setattr(ds, "restore_py_tree", _flaky_restore)
+    report = run_develop_session(str(tmp_path), apply=True, verify=True)
+
+    assert report.regression_rolled_back is True
+    assert not (tmp_path / ".apex" / "proof-of-fix.json").exists()
+    assert any(
+        "restore incomplete" in b and "ledger correction withheld" in b
+        for obj in report.objectives for b in obj.blocked)
 
 
 # --- 5. parity: persisted value_landed == in-memory value_landed_from_session -

@@ -54,6 +54,7 @@ from typing import Any
 from app.engine.objective_compiler import (
     SESSION_OBJECTIVES,
     CompileResult,
+    _record_backstop_ledger_correction,
     compile_objective,
 )
 from app.engine.tree_snapshot import (
@@ -119,6 +120,17 @@ class SessionMove:
     target: str
     description: str
     tier: str
+    # Native-only idiom shapes THIS move's landing recorded into the
+    # native-experience memory — the session-level mirror of ``CompileStep.
+    # native_shapes`` (see that field's docstring), threaded through by
+    # :func:`_collect_objective`. Purely INTERNAL bookkeeping — a session
+    # backstop rollback reads it to name exactly which native experience it
+    # could NOT un-record (``native_proof_memory`` is append-only; see
+    # ``_restore_and_zero``) — so it is deliberately kept OUT of ``to_dict()``:
+    # no external consumer needs it, and every existing JSON artifact stays
+    # byte-identical. Default empty tuple keeps every existing
+    # ``SessionMove(...)`` construction valid.
+    native_shapes: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {"objective": self.objective, "operator": self.operator,
@@ -385,7 +397,8 @@ def _collect_objective(result: CompileResult) -> SessionObjective:
         obj.moves.append(SessionMove(
             objective=result.objective, operator=step.operator,
             target=step.target, description=step.description,
-            tier=_tier_for(step) if result.applied else TIER_PREVIEW))
+            tier=_tier_for(step) if result.applied else TIER_PREVIEW,
+            native_shapes=step.native_shapes))
     obj.blocked = list(result.blocked)
     return obj
 
@@ -503,7 +516,7 @@ def _failing_nodes_checked(root: Path) -> tuple[bool, frozenset[str]]:
 
 
 def _restore_snapshot(root: Path, before: dict[str, str],
-                      after: dict[str, str]) -> None:
+                      after: dict[str, str]) -> list[str]:
     """Roll the tree back to the pre-session ``before`` snapshot, byte-for-byte.
 
     Thin delegator over the shared LEAF :func:`app.engine.tree_snapshot.
@@ -511,8 +524,11 @@ def _restore_snapshot(root: Path, before: dict[str, str],
     end-of-campaign backstop restores with IDENTICAL semantics): every file the
     session MODIFIED is rewritten to its exact pre-session bytes, and every file
     the session CREATED is deleted. Kept as a module-level name so existing
-    callers/tests keep their seam."""
-    restore_py_tree(root, before, after)
+    callers/tests keep their seam. Returns the rels it FAILED to restore
+    (additive — empty on a full success) so :func:`_restore_and_zero` can fail
+    closed on the ledger correction instead of recording a false "rolled_back"
+    proof for a tree that is not actually back at baseline."""
+    return restore_py_tree(root, before, after)
 
 
 def _regressed_nodes(baseline_failing: frozenset[str],
@@ -552,12 +568,61 @@ def _restore_and_zero(
     move so the artifact reflects the rollback, not phantom contributions. The
     caller sets whichever EVIDENCE field is appropriate (``regressed_nodes`` on the
     red path; ``self_inflicted_red`` on the green path) — this only does the part
-    that is identical for both."""
-    _restore_snapshot(root, before, after)
+    that is identical for both.
+
+    LEDGER CORRECTION: every objective's held moves are captured BEFORE they are
+    dropped and handed ONCE, for the whole session, to the SHARED
+    :func:`app.engine.objective_compiler._record_backstop_ledger_correction` — the
+    same fail-closed writer the campaign-level backstop uses (``mode ==
+    "develop-session-backstop"``), so a session rollback also feeds
+    should_avoid/fragility with an honest ``rolled_back`` record instead of
+    leaving the proof ledger silent about it (mirrors ``objective_compiler.
+    _backstop_restore``). FAIL-CLOSED on an INCOMPLETE byte-restore: when
+    ``_restore_snapshot`` reports it could not restore every path, the tree is
+    not provably back at baseline, so the ledger correction is WITHHELD
+    ENTIRELY rather than writing a "rolled_back" record that might itself be
+    false. Any NATIVE-EXPERIENCE shapes the swept moves already recorded
+    (``SessionMove.native_shapes``, threaded by ``_collect_objective``) are
+    disclosed too — ``native_proof_memory`` is append-only, so that pollution
+    can never be un-recorded. Every disclosure is via the EXISTING
+    ``obj.blocked`` channel (prefix ``"backstop restore:"`` — the ONLY prefix
+    :func:`render_session_markdown`'s dedicated section surfaces) — no new
+    ``SessionReport``/``SessionObjective`` field, so a session that lands
+    nothing (``swept`` empty) is unaffected."""
+    swept = [(m.objective, m.operator, m.target,
+             _SESSION_TIER_LEVEL.get(m.tier, "none"))
+             for obj in report.objectives for m in obj.moves]
+    swept_native = sorted(
+        {shape for obj in report.objectives for m in obj.moves
+         for shape in m.native_shapes})
+    failed = _restore_snapshot(root, before, after)
     report.regression_rolled_back = True
+    if failed:
+        ok = False
+    else:
+        ok = _record_backstop_ledger_correction(
+            root, swept, "session-backstop", "develop-session-backstop"
+        ) if swept else True
     # The tree is back at baseline: drop every landed move so the artifact
     # reflects the rollback, not phantom contributions.
     for obj in report.objectives:
+        if obj.moves and failed:
+            obj.blocked.append(
+                "backstop restore: restore incomplete "
+                f"({len(failed)} file(s): {', '.join(failed)}) — ledger "
+                "correction withheld — a false 'rolled_back' record would be "
+                "worse than none")
+        elif obj.moves and not ok:
+            obj.blocked.append(
+                "backstop restore: could not correct the proof ledger — "
+                "should_avoid/fragility will NOT learn from this session "
+                "rollback")
+        if obj.moves and swept_native:
+            obj.blocked.append(
+                "backstop restore: native-experience memory for "
+                f"{len(swept_native)} idiom shape(s) "
+                f"({', '.join(swept_native)}) was already recorded before "
+                "the rollback and could NOT be un-recorded")
         obj.moves = []
 
 
@@ -863,6 +928,37 @@ def _verification_lines(report: SessionReport) -> list[str]:
     return lines
 
 
+_BACKSTOP_DISCLOSURE_PREFIX = "backstop restore:"
+
+
+def _backstop_disclosure_lines(report: SessionReport) -> list[str]:
+    """The BACKSTOP-CORRECTION disclosures a session rollback left behind.
+
+    :func:`_restore_and_zero` appends up to three distinct messages — a ledger
+    correction failure, an incomplete-restore withhold, or unrecordable
+    native-experience pollution — to EVERY objective's ``blocked`` list that
+    lost moves, all prefix-matched ``"backstop restore:"``. This is the ONLY
+    channel that landed those disclosures (no new ``SessionReport``/
+    ``SessionObjective`` field — see that function's docstring), but
+    ``render_session_markdown`` used to never read ``.blocked`` AT ALL, so a
+    correction-failure or restore-incomplete verdict was silently invisible to
+    the buyer artifact. Prefix-matched (never a bare substring) so an ORDINARY
+    blocked reason (a declined move, an unserviceable target) never leaks into
+    this section — those stay exactly where they always rendered: nowhere,
+    same as before this fix (byte-identical for every session that never hit a
+    backstop correction). Deduplicated (the same session-wide message is
+    appended once per objective that lost moves) while preserving first-seen
+    order, so the section reads as a short, non-repetitive list."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for obj in report.objectives:
+        for b in obj.blocked:
+            if b.startswith(_BACKSTOP_DISCLOSURE_PREFIX) and b not in seen:
+                seen.add(b)
+                out.append(b)
+    return out
+
+
 def _render_summary(report: SessionReport) -> list[str]:
     """The headline + per-objective breakdown lines (no diff)."""
     lines = _headline_lines(report)
@@ -871,6 +967,15 @@ def _render_summary(report: SessionReport) -> list[str]:
     # verified" — the loud decline message in the breakdown below says it plainly.
     if report.applied and not report.pytest_missing:
         lines += _verification_lines(report)
+    disclosures = _backstop_disclosure_lines(report)
+    if disclosures:
+        # ADDITIVE, present-only-when-present: a session that never hit a
+        # backstop-correction disclosure renders byte-identically to before
+        # this section existed.
+        lines.append("")
+        lines.append("## Backstop disclosures")
+        for d in disclosures:
+            lines.append(f"- ⚠️ {d}")
     lines.append("")
     lines.append("## Per-objective breakdown")
     work = report.objectives_with_work

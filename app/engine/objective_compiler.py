@@ -117,6 +117,15 @@ class CompileStep:
     # ``to_dict`` and the tier tag byte-identical for every existing campaign
     # (mirrors ``verification_unavailable``).
     delta_vacuous: bool = False
+    # Native-only idiom shapes THIS verified move's landing recorded into the
+    # native-experience memory (``native_proof_memory.record_native_landing``,
+    # via ``_record_native_experience``). Purely INTERNAL bookkeeping — a backstop
+    # rollback reads it to name exactly which native experience it could NOT
+    # un-record (that store is append-only; see ``_backstop_restore``) — so it is
+    # deliberately kept OUT of ``to_dict()``: no external consumer needs it, and
+    # every existing JSON artifact stays byte-identical. Default empty tuple keeps
+    # every existing ``CompileStep(...)`` construction valid.
+    native_shapes: tuple[str, ...] = ()
 
     @property
     def coverage_verified(self) -> bool:
@@ -1445,7 +1454,13 @@ def _apply_one_move(result: CompileResult, mv: Move, root: str, current: float,
         if res.get("reason"):
             result.blocked.append(f"{mv.target}: {res['reason']}")
         return False, current
-    _record_native_experience(root, plan, res)
+    # Capture the shapes THIS move actually recorded (empty on a not-verified /
+    # no-native-shape landing) so a later end-of-campaign backstop rollback can
+    # name exactly which native experience it could NOT retract (see
+    # ``_backstop_restore``). Recording stays EAGER (called here, per move, the
+    # instant it verifies) — deferring it would change a later-in-campaign
+    # target's candidate ranking on the byte-identical non-backstop path.
+    native_shapes = _record_native_experience(root, plan, res)
     nxt = max(0.0, current - 1)
     value = 0.0
     if value_aware:
@@ -1457,24 +1472,33 @@ def _apply_one_move(result: CompileResult, mv: Move, root: str, current: float,
         verified=res.get("verified") is True,
         coverage=str(res.get("coverage") or ""), value=value, tier=tier,
         verification_unavailable=bool(res.get("verification_unavailable")),
-        delta_vacuous=bool(res.get("delta_vacuous"))))
+        delta_vacuous=bool(res.get("delta_vacuous")),
+        native_shapes=native_shapes))
     return True, nxt
 
 
-def _record_native_experience(root: str, plan: Any, res: dict) -> None:
+def _record_native_experience(root: str, plan: Any, res: dict) -> tuple[str, ...]:
     """Remember any native-only idiom shapes a VERIFIED apply landed, so the native
     lane ranks a proven idiom first next time. Gated on ``verified is True`` (not
     merely ``applied``) so experience reflects only suite-proven landings — a
     verification-unavailable / no-suite apply keeps its change but earns no
     experience. Called ONLY after a real applied move (never a dry-run/rollback);
-    a no-op for a plan that landed no native-only body."""
+    a no-op for a plan that landed no native-only body.
+
+    Returns the shapes actually recorded (empty tuple on either early-return
+    path), so the caller can attribute them to this move's ``CompileStep`` — the
+    evidence a backstop rollback needs to disclose UN-retractable native
+    experience (``native_proof_memory`` is append-only; there is no partial
+    retraction). Purely additive: the only caller, ``_apply_one_move``, is in
+    this same module."""
     if res.get("verified") is not True:
-        return
+        return ()
     shapes = getattr(plan, "native_shapes", None)
     if not shapes:
-        return
+        return ()
     from app.engine.native_proof_memory import record_native_landing
     record_native_landing(root, shapes)
+    return tuple(shapes)
 
 
 def _run_pass(result: CompileResult, moves: list[Move], root: str, current: float,
@@ -1650,6 +1674,102 @@ def _campaign_baseline_and_backstop(
     return (backstop.baseline_failing or None), backstop
 
 
+def _record_backstop_ledger_correction(
+    root: str | Path,
+    swept: list[tuple[str, str, str, str]],
+    verdict: str, mode: str,
+) -> bool:
+    """FAIL-CLOSED: correct the shared proof-of-fix ledger for a backstop rollback.
+
+    A per-move rollback in the maintain path already gets recorded with
+    ``outcome: "rolled_back"`` via ``proof_of_fix.build_proof``, feeding
+    ``should_avoid``/fragility (``counterfactual_learning``/``proof_history``). A
+    CAMPAIGN-LEVEL backstop rollback (this module's ``_backstop_restore``, and
+    ``develop_session._restore_and_zero``) used to write NO record at all — the
+    swept moves were correctly excluded from ever being claimed "applied" (never
+    fake green), but the honest INVERSE — "this was tried and rolled back" — never
+    reached the ledger either, so the organism could never learn from it.
+
+    Writes one ``.apex/proof-of-fix.json``-shaped proof (``proof_of_fix.SCHEMA``/
+    ``SCHEMA_VERSION``/``tool_version``/``write_proof``, mirroring
+    ``develop_session._session_proof_records``'s exact per-fix shape) with every
+    swept ``(objective, operator, target, level)`` tuple recorded as
+    ``outcome: "rolled_back"`` (``totals.applied = 0``, ``totals.rolled_back =
+    len(swept)``), distinctly attributed by ``mode`` (``"develop-backstop"`` /
+    ``"develop-session-backstop"``) so it never conflates with a genuine
+    ``"develop-session"``/``dream-land`` landing. ``proof_history.
+    load_proof_history``'s existing glob discovers it with NO reader change.
+
+    ``finding.action`` is stamped with the ``operator`` — NOT the objective name
+    — because that is the CONSUMER-CORRECT key: the runtime avoid-guard queries
+    ``should_avoid(signatures, mv.operator, module_traits(...))``
+    (``_avoid_flagged_targets`` below) and ``counterfactual_learning._action_of``
+    reads ``finding.action`` verbatim, exactly mirroring the maintain-path
+    convention the avoid-skip tests already assume (``tests/
+    test_develop_avoid_skip_eyml.py``'s ``_fix(action, module, outcome)`` builds
+    ``action`` from the OPERATOR, e.g. ``"drop_param"``, never the objective).
+    Stamping the objective name there instead (e.g. ``"dead-params"``) would be
+    silently invisible to every ``should_avoid`` query, which never asks for
+    that key — a past version of this function did exactly that, and the
+    avoid-guard could NEVER learn from a backstop correction despite this
+    docstring's claim. ``finding.label`` keeps the objective name for HUMAN
+    attribution (which campaign/objective produced this correction) — that
+    field has no ``should_avoid`` consumer, so overloading it is safe.
+
+    KNOWN, OUT-OF-FENCE gap (do not fix here): ``develop_session.
+    _session_proof_records`` (a genuine LANDING record, not a correction) still
+    stamps ``finding.action = obj.objective`` — the SAME objective-name-as-action
+    mismatch this function used to have. It is pre-existing, unrelated to the
+    backstop-correction contract this function owns, and is out of this wave's
+    fence; tracked as a follow-up.
+
+    Empty ``swept`` is a no-op (``return True`` — nothing to correct). The whole
+    body is wrapped so this NEVER raises: a ledger-write failure must never crash
+    the restore it is correcting for; the caller discloses a ``False`` return
+    loudly instead (see ``_backstop_restore``)."""
+    if not swept:
+        return True
+    try:
+        from datetime import datetime, timezone
+
+        from app.engine.proof_of_fix import (
+            SCHEMA,
+            SCHEMA_VERSION,
+            tool_version,
+            write_proof,
+        )
+
+        fixes = [
+            {
+                "finding": {"label": objective, "branch": "", "action": operator,
+                            "operator": operator, "target": target},
+                "transform_type": "", "risk_tier": None,
+                "outcome": "rolled_back",
+                "changed_files": [], "diff": "",
+                "verification": {"performed": True,
+                                 "strength": {"level": level}},
+                "rollback": {"occurred": True, "reason": verdict},
+            }
+            for objective, operator, target, level in swept
+        ]
+        proof = {
+            "schema": SCHEMA, "schema_version": SCHEMA_VERSION,
+            "tool": {"name": "Apex Orchestrator", "version": tool_version()},
+            "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "project_root": str(root),
+            "objective": mode,
+            "mode": mode,
+            "verify": True,
+            "totals": {"executable": len(fixes), "applied": 0,
+                      "rolled_back": len(fixes), "blocked": 0, "committed": 0},
+            "fixes": fixes,
+        }
+        write_proof(proof, str(root))
+        return True
+    except Exception:
+        return False
+
+
 def _backstop_restore(result: CompileResult, root: str,
                       backstop: _BackstopState, after: dict[str, str],
                       verdict: str, reason: str) -> None:
@@ -1661,14 +1781,60 @@ def _backstop_restore(result: CompileResult, root: str,
     phantom contributions, mirroring the session's ``_restore_and_zero``), resets
     ``fitness_end`` (no debt was actually cleared), and appends a rollback-shaped
     ``blocked`` reason (the word "restored" is what chain/goal consumers key
-    their red-halt detection off — see ``chain_compiler._step_is_red``)."""
+    their red-halt detection off — see ``chain_compiler._step_is_red``).
+
+    Up to three BACKSTOP disclosures, all via the EXISTING ``blocked`` channel
+    (no new ``CompileResult`` field, so ``to_dict()`` stays byte-identical on
+    every non-backstop path) — (1) the byte-restore itself may fail PER PATH
+    (``restore_py_tree`` is best-effort); when it does, the ledger correction is
+    WITHHELD ENTIRELY (never fake a "rolled_back" record for a tree that is not
+    provably back at baseline — saying nothing true beats saying something
+    false) and the incompleteness is disclosed instead; (2) otherwise, the swept
+    steps — captured BEFORE ``steps`` is cleared — are handed to
+    :func:`_record_backstop_ledger_correction`, and a WRITE failure there is
+    disclosed loudly (should_avoid/fragility silently blind to this rollback
+    would be worse than a visible warning); (3) any NATIVE-EXPERIENCE shapes
+    those swept steps already recorded (``CompileStep.native_shapes``) are named
+    explicitly — ``native_proof_memory`` is append-only, so that pollution can
+    be disclosed but never retracted here. All disclosures (plus ``reason``
+    itself) are INSERTED at the FRONT of ``result.blocked`` (position 0), not
+    appended — they are campaign-verdict-critical and must survive
+    ``render_compile_markdown``'s ``blocked[:10]`` truncation even in a busy
+    campaign that already accumulated 10+ ordinary blocked reasons."""
     from app.engine.tree_snapshot import restore_py_tree
 
-    restore_py_tree(Path(root), backstop.before, after)
+    swept = [(result.objective, s.operator, s.target, s.coverage)
+             for s in result.steps]
+    swept_native = sorted(
+        {shape for s in result.steps for shape in s.native_shapes})
+    failed = restore_py_tree(Path(root), backstop.before, after)
     result.regression_backstop = verdict
     result.steps.clear()
     result.fitness_end = result.fitness_start
-    result.blocked.append(reason)
+    disclosures = [reason]
+    if failed:
+        # FAIL-CLOSED (never-fake-green): the tree is not provably back at
+        # baseline, so a "rolled_back" ledger record would itself be a false
+        # claim — withhold it entirely rather than launder a partial restore
+        # into honest-looking evidence.
+        disclosures.append(
+            "backstop restore: restore incomplete "
+            f"({len(failed)} file(s): {', '.join(failed)}) — ledger "
+            "correction withheld — a false 'rolled_back' record would be "
+            "worse than none")
+    elif not _record_backstop_ledger_correction(root, swept, verdict,
+                                                "develop-backstop"):
+        disclosures.append(
+            "backstop restore: could not correct the proof ledger for "
+            f"{len(swept)} swept move(s) — should_avoid/fragility will NOT "
+            "learn from this rollback")
+    if swept_native:
+        disclosures.append(
+            "backstop restore: native-experience memory for "
+            f"{len(swept_native)} idiom shape(s) ({', '.join(swept_native)}) "
+            "was already recorded before the rollback and could NOT be "
+            "un-recorded")
+    result.blocked[0:0] = disclosures
 
 
 def _finish_regression_backstop(result: CompileResult, root: str,

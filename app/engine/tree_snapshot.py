@@ -70,7 +70,7 @@ def snapshot_py_tree(root: Path) -> dict[str, str]:
 
 
 def restore_py_tree(root: Path, before: dict[str, str],
-                    after: dict[str, str]) -> None:
+                    after: dict[str, str]) -> list[str]:
     """Roll the tree back to the ``before`` snapshot, byte-for-byte.
 
     Mirrors ``apply_rename``'s rollback semantics: every file MODIFIED since the
@@ -81,8 +81,14 @@ def restore_py_tree(root: Path, before: dict[str, str],
     codec used to capture (``_CODEC``/``_ERRORS``) and writes raw bytes
     (``write_bytes``) so CRLF/BOM/no-trailing-newline originals are restored
     exactly, not normalized. Best-effort per path (an unwritable path is
-    skipped) but the common case restores the whole working tree to its
-    captured baseline state."""
+    skipped, so the rest of the tree still restores) — but a skip is no longer
+    silent: this returns the SORTED list of rel-posix paths whose
+    ``write_bytes``/``unlink`` FAILED (empty on a full, successful restore), so
+    a caller can fail closed on whatever it was about to claim (e.g. a
+    "rolled_back" proof-of-fix correction) rather than asserting the tree is
+    back at baseline when it provably isn't. ADDITIVE: every existing caller
+    that ignores the return value behaves exactly as before."""
+    failed: list[str] = []
     for rel in sorted(set(before) | set(after)):
         path = root / rel
         if rel in before:
@@ -92,10 +98,11 @@ def restore_py_tree(root: Path, before: dict[str, str],
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(before[rel].encode(_CODEC, _ERRORS))
             except OSError:
-                continue
+                failed.append(rel)
         else:
             # Created since the capture — remove it to restore the baseline tree.
             try:
                 path.unlink()
             except OSError:
-                continue
+                failed.append(rel)
+    return failed
