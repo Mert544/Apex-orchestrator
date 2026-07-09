@@ -20,6 +20,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 
 # --- helpers -----------------------------------------------------------------
 
@@ -130,6 +132,12 @@ def test_single_witness_floor_refused(tmp_path: Path):
     assert body is None
 
 
+# Legitimately slow, not hung: refusal paths probe EVERY candidate through
+# the real nested-pytest gate (~2 min on a 2-core box), living at the exact
+# edge of the global --timeout=120 hang-catcher — measured borderline both
+# pre- and post-wave, so this is a hardware-speed margin, not a regression.
+# Same precedent as test_security_audit.py's widened timeout.
+@pytest.mark.timeout(300)
 def test_coincidental_split_no_consistent_affine_refused(tmp_path: Path):
     # dub("aa") == "aaa", dub("bb") == "bbb": each output COULD be split affinely on
     # its own (prefix "a" or suffix "a"), but NO single fixed prefix/suffix holds for

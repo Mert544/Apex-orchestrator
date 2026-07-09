@@ -722,7 +722,7 @@ def test_develop_objective_scope_verify_follows_fast_flag(
             return {}
 
     def _compile(target, objective="", max_steps=25, verify=True, apply=False,
-                 scope_verify=False, min_move_value=0.0):
+                 scope_verify=False, min_move_value=0.0, manifesto_aware=False):
         seen["scope_verify"] = scope_verify
         return _R()
     monkeypatch.setattr("app.engine.objective_compiler.compile_objective",
@@ -787,9 +787,10 @@ def test_develop_sparse_namespace_uses_safe_defaults(tmp_path, monkeypatch):
             return {}
 
     def _compile(target, objective="", max_steps=25, verify=True, apply=False,
-                 scope_verify=False, min_move_value=0.0):
+                 scope_verify=False, min_move_value=0.0, manifesto_aware=False):
         seen.update(max_steps=max_steps, verify=verify, apply=apply,
-                    scope_verify=scope_verify, min_move_value=min_move_value)
+                    scope_verify=scope_verify, min_move_value=min_move_value,
+                    manifesto_aware=manifesto_aware)
         return _R()
     monkeypatch.setattr("app.engine.objective_compiler.compile_objective",
                         _compile)
@@ -803,9 +804,11 @@ def test_develop_sparse_namespace_uses_safe_defaults(tmp_path, monkeypatch):
     # max_steps default 25 (line 575), apply default False (577),
     # verify=not no_verify default -> True (576), scope_verify default False (548),
     # min_move_value -> 0.0 (the --min-value None default maps to the engine's
-    # byte-identical 0.0 floor; a sparse namespace has no min_value attr).
+    # byte-identical 0.0 floor; a sparse namespace has no min_value attr),
+    # manifesto_aware default False (the opt-in constitution gate stays off).
     assert seen == {"max_steps": 25, "verify": True, "apply": False,
-                    "scope_verify": False, "min_move_value": 0.0}
+                    "scope_verify": False, "min_move_value": 0.0,
+                    "manifesto_aware": False}
 
 
 def test_develop_sparse_namespace_from_dream_default_false(tmp_path, monkeypatch):

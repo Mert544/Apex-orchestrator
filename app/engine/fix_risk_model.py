@@ -359,6 +359,23 @@ def fix_risk(
     native experience) are unchanged in both modes. With an empty proof
     history ``recency=True`` and ``recency=False`` score identically (both
     signals abstain to the neutral baseline)."""
+    reliabilities, summary, signatures, decayed_fragility = _signal_inputs(
+        root, recency)
+    return _score(
+        reliabilities, summary, signatures, str(action_type), str(module), root,
+        decayed_fragility,
+    )["risk"]
+
+
+def _signal_inputs(
+    root: str | Path, recency: bool
+) -> tuple[dict, dict, dict, dict[str, float] | None]:
+    """The fused-signal inputs, loaded ONCE from the proof history —
+    ``(reliabilities, summary, signatures, decayed_fragility)`` — shared by
+    :func:`fix_risk`, :func:`rank_fix_risks` and :func:`explain_fix_risk` so
+    the recency-switch semantics live in exactly one place. ``recency`` swaps
+    in the rank-decayed variants as :func:`fix_risk` documents;
+    ``decayed_fragility`` is ``None`` when recency is off."""
     history = load_proof_history(root)
     reliabilities = (
         learned_reliability_decayed(history)
@@ -368,10 +385,7 @@ def fix_risk(
     summary = summarise_fix_track_record(history)
     signatures = failure_signatures(history)
     decayed_fragility = _module_fragility_decayed(history) if recency else None
-    return _score(
-        reliabilities, summary, signatures, str(action_type), str(module), root,
-        decayed_fragility,
-    )["risk"]
+    return reliabilities, summary, signatures, decayed_fragility
 
 
 def rank_fix_risks(
@@ -385,15 +399,8 @@ def rank_fix_risks(
     across candidates. ``recency`` is the same OPT-IN decay switch
     :func:`fix_risk` documents (default ``False`` — byte-identical to the
     historical behaviour); an empty candidate list → ``[]``; never raises."""
-    history = load_proof_history(root)
-    reliabilities = (
-        learned_reliability_decayed(history)
-        if recency
-        else learned_reliability(history)
-    )
-    summary = summarise_fix_track_record(history)
-    signatures = failure_signatures(history)
-    decayed_fragility = _module_fragility_decayed(history) if recency else None
+    reliabilities, summary, signatures, decayed_fragility = _signal_inputs(
+        root, recency)
     scored = [
         _score(
             reliabilities, summary, signatures, str(action), str(module), root,
@@ -591,13 +598,8 @@ def explain_fix_risk(
     raises."""
     action_type = str(action)
     module_name = str(module)
-    history = load_proof_history(root)
-    reliabilities = (
-        learned_reliability_decayed(history) if recency else learned_reliability(history)
-    )
-    summary = summarise_fix_track_record(history)
-    signatures = failure_signatures(history)
-    decayed_fragility = _module_fragility_decayed(history) if recency else None
+    reliabilities, summary, signatures, decayed_fragility = _signal_inputs(
+        root, recency)
     scored = _score(
         reliabilities, summary, signatures, action_type, module_name, root,
         decayed_fragility,

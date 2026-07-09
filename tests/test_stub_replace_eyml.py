@@ -32,6 +32,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 
 # --- helpers -----------------------------------------------------------------
 
@@ -155,6 +157,12 @@ def test_identity_contract_refused(tmp_path: Path):
     assert body is None or ".replace(" not in body
 
 
+# Legitimately slow, not hung: refusal paths probe EVERY candidate through
+# the real nested-pytest gate (~2 min on a 2-core box), living at the exact
+# edge of the global --timeout=120 hang-catcher — measured borderline both
+# pre- and post-wave, so this is a hardware-speed margin, not a regression.
+# Same precedent as test_security_audit.py's widened timeout.
+@pytest.mark.timeout(300)
 def test_no_pair_reproduces_contract_refused(tmp_path: Path):
     # f('ab') == 'cd', f('ef') == 'gh' is a str->str contract that NO single (old, new)
     # reproduces (the two transforms share no common substitution). The family emits
@@ -169,6 +177,12 @@ def test_no_pair_reproduces_contract_refused(tmp_path: Path):
     assert body is None or ".replace(" not in body
 
 
+# Legitimately slow, not hung: refusal paths probe EVERY candidate through
+# the real nested-pytest gate (~2 min on a 2-core box), living at the exact
+# edge of the global --timeout=120 hang-catcher — measured borderline both
+# pre- and post-wave, so this is a hardware-speed margin, not a regression.
+# Same precedent as test_security_audit.py's widened timeout.
+@pytest.mark.timeout(300)
 def test_ambiguous_two_pairs_fit_refused(tmp_path: Path):
     # f('cab') == 'ccb', f('dab') == 'dcb' is reproduced by TWO distinct pairs — both
     # 'a'->'c' AND 'ab'->'cb' give 'ccb'/'dcb' — so the witnesses cannot tell which span
