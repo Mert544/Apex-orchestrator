@@ -284,6 +284,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--base", default="",
                         help="diff base for --impacted (default: the branch's "
                              "own origin ref, else main)")
+    parser.add_argument("--nodes", action="store_true",
+                        help="(with --impacted) narrow further to individual "
+                             "test NODE ids where the AST can prove it safe "
+                             "(fail-closed: any unsafe file still runs whole). "
+                             "Opt-in only — without --nodes, --impacted is "
+                             "byte-identical to before this flag existed.")
     parser.add_argument("pytest_args", nargs="*",
                         help="extra args passed through to pytest (after --)")
     return parser
@@ -336,9 +342,16 @@ def _run_labelled(labelled: list[tuple[str, list[Path]]], args,
 
 def _run_impacted(args, results: list[tuple[str, int]]) -> None:
     """The ``--impacted`` fast-iteration mode: honest banner, reachability
-    selection, loud disclosure of changed files no test reaches."""
+    selection, loud disclosure of changed files no test reaches.
+
+    ``--nodes`` is opt-in and handled by a separate helper entirely — this
+    function's own body is untouched below, so plain ``--impacted`` stays
+    byte-identical to before ``--nodes`` existed."""
     base = args.base or default_impacted_base()
     changed = git_changed_files(base)
+    if getattr(args, "nodes", False):
+        _run_impacted_nodes(args, results, changed, base)
+        return
     files, uncovered = impacted_selection(changed)
     print(f"⚡ IMPACTED gate — {len(changed)} changed file(s) vs {base} → "
           f"{len(files)} test file(s) by import reachability.")
@@ -350,6 +363,39 @@ def _run_impacted(args, results: list[tuple[str, int]]) -> None:
         print("   (no impacted tests — nothing to run)")
         return
     sel = chunk_files(files, max(1, min(args.chunks, len(files))))
+    labelled = [(f"impacted {i}/{len(sel)}", c) for i, c in enumerate(sel, 1)]
+    _run_labelled(labelled, args, results)
+
+
+def _run_impacted_nodes(args, results: list[tuple[str, int]],
+                        changed: list[str], base: str) -> None:
+    """``--impacted --nodes``: node-level narrowing (fail-closed) layered on
+    top of the same file-level reachability — same honest-disclosure banner
+    contract, plus how many impacted files were narrowed to individual test
+    node ids vs. had to run whole."""
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    from app.engine.node_impact import impacted_test_nodes
+    from app.engine.test_impact import impacted_test_files
+
+    py_changed = [c for c in changed if c.endswith(".py") and (ROOT / c).exists()]
+    _, uncovered = impacted_selection(changed, root=ROOT)
+    total_files = len(impacted_test_files(ROOT, py_changed))
+    node_ids, fallback_rel = impacted_test_nodes(ROOT, py_changed)
+    narrowed = total_files - len(fallback_rel)
+    print(f"⚡ IMPACTED gate — {len(changed)} changed file(s) vs {base} → "
+          f"{total_files} test file(s) by import reachability.")
+    print(f"   node-narrowed {narrowed}/{total_files} impacted files (fail-closed)")
+    print("   NOT the push gate: pushing still requires the full run "
+          "(python scripts/verify.py --chunks 16 -j 4).")
+    for rel in uncovered:
+        print(f"   ⚠ no test reaches {rel} — an impacted-green does NOT vouch for it")
+    argv = sorted(node_ids) + sorted(fallback_rel)
+    if not argv:
+        print("   (no impacted tests — nothing to run)")
+        return
+    targets = [Path(a) for a in argv]
+    sel = chunk_files(targets, max(1, min(args.chunks, len(targets))))
     labelled = [(f"impacted {i}/{len(sel)}", c) for i, c in enumerate(sel, 1)]
     _run_labelled(labelled, args, results)
 
