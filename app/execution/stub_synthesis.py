@@ -532,6 +532,7 @@ def _one_arg_templates(a: str, witnesses: list[tuple[str, str]]) -> list[tuple[s
     out.extend(_dict_index_templates(a, witnesses))
     out.extend(_slice_templates(a, witnesses))
     out.extend(_index_templates(a, witnesses))
+    out.extend(_left_constant_mult_templates(a, witnesses))
     out.extend(_one_arg_builtin_templates(a, kind, witnesses))
     out.extend(_compose_index_arith_templates(a, witnesses, simpler=out))
     out.extend(_sorted_index_templates(a, witnesses, simpler=out))
@@ -1807,6 +1808,86 @@ def _index_witness_element(args_text: str, expected_text: str) -> object:
     return element if seq.index(element) == expected else _NO_LITERAL
 
 
+def _left_constant_mult_templates(a: str,
+                                  witnesses: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """The 1-arg LEFT-CONSTANT REPEAT family: ``return k * a`` for a witness-mined
+    integer ``k`` — the sequence-repetition MIRROR of :func:`_scalar_arith_templates`'s
+    witness-derived ``a * k`` (constant on the RIGHT). That family only reliably finds
+    ``k`` for plain NUMERIC witnesses — its constant source is int-literal presence or an
+    arithmetic offset/quotient (:func:`_numeric_constants`), not a structural length
+    ratio — so a genuine sequence-repeat contract like ``triple(['x','y']) == ['x','y',
+    'x','y','x','y']`` bakes no literal ``3`` anywhere in the witness text and is never
+    proposed by it. This family derives ``k`` STRUCTURALLY instead, via
+    :func:`_sequence_repeat_factor`: the sole integer such that ``k * seq`` reproduces
+    the EXPECTED sequence across EVERY witness.
+
+    ONLY the ``*`` shape is offered (``k + a`` / ``k - a`` / ``k // a`` are not even
+    well-typed for a ``str``/``bytes``/``list``/``tuple``); the constant is placed on the
+    LEFT (``k * a``) — the spelling this family owns, distinct from the RIGHT-constant
+    ``a * k`` :func:`_scalar_arith_templates` already offers for numeric args (and for
+    ``str``/``bytes``/``list``/``tuple`` both spellings compute the identical repeated
+    sequence, so the two families never disagree when they happen to overlap — see
+    :func:`_matching_shapes`, which does not flag agreeing candidates as ambiguous).
+
+    Gated behind the same >=2-distinct-witness overfit floor (:func:`_string_floor_met`)
+    every other value-derived shape in this module uses — a single witness cannot tell a
+    genuine repeat from a coincidental length match. With NO witnesses (the structural
+    view) nothing is mined — there is no length ratio to derive. The existing accept-gate
+    and sequence canary probes stay the sole ambiguity arbiters."""
+    k = _sequence_repeat_factor(witnesses)
+    if k is None:
+        return []
+    return [(f"{k}*a", f"{k} * {a}")]
+
+
+def _sequence_repeat_factor(witnesses: list[tuple[str, str]]) -> int | None:
+    """The single consistent integer ``k >= 2`` such that ``k * seq == expected`` holds
+    for EVERY witness — or ``None`` when no such ``k`` exists.
+
+    Each witness independently proposes a ``k`` (:func:`_witness_repeat_factor`); ALL
+    witnesses must agree on the exact SAME ``k``, and any witness that cannot support the
+    shape at all (non-literal, multi-arg, mixed-type, non-sequence, empty input, or a
+    length ratio that does not actually reproduce the sequence) voids the WHOLE family —
+    mirroring :func:`_clamp_constants`'s strict all-or-nothing witness read (a structural
+    invariant like a repeat count is not something a partial witness set may partially
+    support). Gated behind the >=2-distinct-witness overfit floor
+    (:func:`_string_floor_met`): a single witness cannot distinguish a genuine repeat
+    from a coincidental length match (e.g. ``triple('ab') == 'ababab'`` fits ``k=3`` but
+    also a bare literal return)."""
+    if not _string_floor_met(witnesses):
+        return None
+    factor: int | None = None
+    for args_text, expected_text in witnesses:
+        k = _witness_repeat_factor(args_text, expected_text)
+        if k is None or (factor is not None and k != factor):
+            return None
+        factor = k
+    return factor
+
+
+def _witness_repeat_factor(args_text: str, expected_text: str) -> int | None:
+    """The ``k`` a SINGLE witness supports for ``k * seq == expected``, or ``None`` when
+    the witness cannot support this shape: non-literal / multi-arg, a ``seq``/``expected``
+    pair that is not the SAME ``str``/``bytes``/``list``/``tuple`` type (TYPE-EXACT, like
+    the ``.index``-element family — a ``str`` never legitimately repeats into a ``list``),
+    an empty ``seq`` (no ratio is derivable — ``k * "" == ""`` for every ``k``), a length
+    that does not evenly divide, or a ratio that merely divides evenly without actually
+    reproducing the sequence when repeated (a shuffled/unequal-length coincidence).
+    ``k`` of ``0``/``1`` is excluded — those are the constant-return and passthrough
+    families' territory, never this one's to spell."""
+    value = _literal_tuple(args_text)
+    expected = _literal_value(expected_text)
+    if value is None or len(value) != 1 or expected is _NO_LITERAL:
+        return None
+    seq = value[0]
+    if type(seq) is not type(expected) or not isinstance(seq, (str, bytes, list, tuple)):
+        return None
+    if len(seq) == 0 or len(expected) % len(seq) != 0:
+        return None
+    k = len(expected) // len(seq)
+    return k if k >= 2 and seq * k == expected else None
+
+
 def _compose_index_arith_templates(
     a: str, witnesses: list[tuple[str, str]],
     simpler: list[tuple[str, str]] | None = None,
@@ -2541,12 +2622,22 @@ def _two_arg_templates(a: str, b: str,
     ``min(a, b)`` / ``max(a, b)`` carry an OVERFIT FLOOR: a single example, or a
     batch that never crosses ``a<b`` AND ``a>b``, leaves them indistinguishable from
     a plain ``a``/``b`` passthrough, so they are withheld unless the witnesses
-    DISCRIMINATE (at least one ``a<b`` and one ``a>b``). The other VALUE-FREE widened
-    shapes are pure and gate-verified, so they need no floor (a non-matching one is
-    rejected, never landed). The VALUE-DERIVED format/get shapes that bake a witness
-    literal (``f"{a}{sep}{b}"`` with a derived ``sep``; ``a.get(b, default)`` with a
-    derived ``default``) carry the same >=2-distinct-witness overfit floor the
-    derived numeric/string shapes use, so one example cannot overfit a literal in."""
+    DISCRIMINATE (at least one ``a<b`` and one ``a>b``). Immediately after them, the
+    TWO-WITNESS TERNARY family (:func:`_select_ternary_templates`) offers ``a if a
+    <op> b else b`` for ``op`` in ``<=``/``>=``/``==`` under its own floor
+    (:func:`_select_discriminated`) — and, for ``<=``/``>=``, a DEFERRAL RULE: on a
+    PARTIAL order ``min``/``max`` and the ternary are different functions (an
+    incomparable pair: ``min`` keeps ``a``, the ternary falls to ``b``), so the
+    ternary is withheld whenever the corresponding builtin already reproduces every
+    witness, and fires only in territory ``min``/``max`` cannot serve. ``<``/``>``
+    ternaries are deliberately never offered: they would just be the ``min``/``max``
+    intent spelled a second way — pure duplication, not a new shape.
+    The other VALUE-FREE widened shapes are pure and gate-verified, so they need no
+    floor (a non-matching one is rejected, never landed). The VALUE-DERIVED
+    format/get shapes that bake a witness literal (``f"{a}{sep}{b}"`` with a derived
+    ``sep``; ``a.get(b, default)`` with a derived ``default``) carry the same
+    >=2-distinct-witness overfit floor the derived numeric/string shapes use, so one
+    example cannot overfit a literal in."""
     witnesses = witnesses or []
     ops = ["+", "-", "*", "//", "%", "/"]
     out = [(op, f"{a} {op} {b}") for op in ops]
@@ -2559,6 +2650,7 @@ def _two_arg_templates(a: str, b: str,
     if _minmax_discriminated(witnesses):
         out.append(("min", f"min({a}, {b})"))
         out.append(("max", f"max({a}, {b})"))
+    out.extend(_select_ternary_templates(a, b, witnesses))
     out.append(("pow", f"{a} ** {b}"))
     out.append(("in", f"{a} in {b}"))
     out.append(("not in", f"{a} not in {b}"))
@@ -2575,6 +2667,115 @@ def _two_arg_templates(a: str, b: str,
     out.append(("get", f"{a}.get({b})"))
     out.extend(_get_default_templates(a, b, witnesses))
     return out
+
+
+def _select_ternary_templates(a: str, b: str,
+                              witnesses: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """The 2-arg TWO-WITNESS TERNARY family: ``a if a <op> b else b`` for ``op`` in
+    ``<=``/``>=``/``==`` — a witness-gated selector between the two params, offered
+    right after ``min(a, b)``/``max(a, b)`` in the candidate order.
+
+    ``<``/``>`` are DELIBERATELY never offered here: ``a if a < b else b`` / ``a if a
+    > b else b`` are simply the ``min``/``max`` INTENT spelled a second way — adding
+    them would be pure duplication of an ALREADY-OFFERED shape, never a new one.
+    ``<=``/``>=``/``==`` earn their place instead: each is gated by its OWN overfit
+    floor (:func:`_select_discriminated`) rather than reusing ``min``/``max``'s
+    stricter :func:`_minmax_discriminated`.
+
+    THE DEFERRAL RULE (adversarial-review correction): on a TOTAL order ``a if a <=
+    b else b`` computes the same value as ``min(a, b)``, but on a PARTIAL order they
+    are DIFFERENT functions — on an INCOMPARABLE pair (disjoint sets: ``{5, 6}`` vs
+    ``{1, 2}``) ``min`` keeps ``a`` where the ternary falls to ``b``. So a
+    comparable-set-witnessed ``min`` contract would otherwise see BOTH as surviving,
+    genuinely divergent candidates (the identity-shape collapse is 1-param-only; the
+    recombination canaries produce incomparable pairs) and the ambiguity guard would
+    REFUSE a contract that used to land cleanly as ``min(a, b)``. Therefore
+    ``select<=``/``select>=`` are offered ONLY when the corresponding ``min``/``max``
+    does NOT reproduce every witness (:func:`_minmax_reproduces_all`) — the ternary
+    fires solely in territory the builtin cannot serve (an incomparable-pair witness
+    it fails, or an unorderable one it raises on), which is where its landing value
+    is anyway. Every ``min``/``max``-serviceable corpus therefore lands byte-identical
+    to before this family existed. ``==`` has no ``min``/``max`` analogue, so it
+    carries no deferral — a tie-discriminated equality-selector contract is genuine
+    new reach."""
+    out: list[tuple[str, str]] = []
+    for op in ("<=", ">=", "=="):
+        if not _select_discriminated(witnesses, op):
+            continue
+        if op != "==" and _minmax_reproduces_all(witnesses, op):
+            continue  # DEFER: min/max serves these witnesses — its territory
+        out.append((f"select{op}", f"{a} if {a} {op} {b} else {b}"))
+    return out
+
+
+def _minmax_reproduces_all(witnesses: list[tuple[str, str]], op: str) -> bool:
+    """True when the builtin corresponding to ``op`` (``min`` for ``<=``, ``max``
+    for ``>=``) REPRODUCES every literal 2-arg witness — the deferral predicate for
+    :func:`_select_ternary_templates`: while the builtin serves the witnesses, the
+    equivalent-looking selector ternary is withheld, because on a PARTIAL order the
+    two silently diverge on incomparable pairs and would otherwise turn a landable
+    ``min``/``max`` contract into an ambiguity refusal.
+
+    ``False`` — the ternary's own territory — when the builtin FAILS a witness
+    (returns a value other than the expected literal, type-exactly: an incomparable
+    pair where the contract expects ``b``) or RAISES on one (an unorderable pair).
+    Non-literal / non-2-arg / non-literal-expected witnesses are skipped: they can
+    prove neither service nor failure. With nothing evaluable it stays ``True``
+    (defer), which is moot — :func:`_select_discriminated` is already ``False`` on
+    such a set. Deterministic."""
+    picker = min if op == "<=" else max
+    for args_text, expected_text in witnesses:
+        value = _literal_tuple(args_text)
+        if value is None or len(value) != 2:
+            continue
+        expected = _literal_value(expected_text)
+        if expected is _NO_LITERAL:
+            continue
+        try:
+            result = picker(value[0], value[1])
+        except TypeError:
+            return False  # unorderable pair — min/max cannot serve this contract
+        if type(result) is not type(expected) or result != expected:
+            return False  # a witness min/max fails — the ternary's own territory
+    return True
+
+
+def _select_discriminated(witnesses: list[tuple[str, str]], op: str) -> bool:
+    """True when the 2-arg witnesses DISCRIMINATE the ``op``-selector ternary from a
+    plain passthrough of ``b``: at least one literal witness takes the ``a`` branch
+    (``a <op> b`` holds) and at least one takes the ``b`` branch (it does not) — the
+    SAME shape of overfit floor :func:`_minmax_discriminated` uses for ``<``/``>``,
+    applied to ``op`` instead (and, for ``<=``/``>=``, satisfiable by a TIE witness
+    alone contributing the ``a``-branch side, which ``_minmax_discriminated``'s
+    strict ``<``/``>`` cannot use). Non-literal / non-2-arg / unorderable witnesses
+    are ignored (they cannot establish either branch). Deterministic."""
+    saw_true = saw_false = False
+    for args_text, _expected in witnesses:
+        value = _literal_tuple(args_text)
+        if value is None or len(value) != 2:
+            continue
+        a_val, b_val = value[0], value[1]
+        try:
+            cond = _select_condition(op, a_val, b_val)
+        except TypeError:
+            continue
+        if cond:
+            saw_true = True
+        else:
+            saw_false = True
+    return saw_true and saw_false
+
+
+def _select_condition(op: str, a_val: object, b_val: object) -> bool:
+    """Evaluate the selector ternary's own condition ``a_val <op> b_val`` for the one
+    of ``<=``/``>=``/``==`` named by ``op``. May raise ``TypeError`` for an
+    unorderable ``<=``/``>=`` pair (``==`` never raises — Python's default equality
+    falls back to identity)."""
+    if op == "<=":
+        return a_val <= b_val
+    if op == ">=":
+        return a_val >= b_val
+    return a_val == b_val
 
 
 def _fstring_sep_templates(a: str, b: str,
@@ -5731,6 +5932,10 @@ def _single_arg_canary_probes(
         return _float_canary_probes(witnesses)
     if all(isinstance(v, (list, tuple)) for v in arg0s):
         return _sequence_canary_probes(witnesses)
+    # KNOWN ASYMMETRY (adversarial review, recorded follow-up — not fixed here):
+    # a single-``bytes``-argument contract falls through to [] and gets ZERO
+    # synthetic canaries, so its ambiguity guard weighs only the witnessed tuples
+    # (str contracts get perturbation probes). Conservative but under-probed.
     return []
 
 
