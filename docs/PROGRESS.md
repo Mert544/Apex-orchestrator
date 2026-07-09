@@ -5,7 +5,11 @@
 > kaldığı yerden devam edebilsin diye yazıldı. North Star/`CLAUDE.md` **kilitli
 > misyon**; bu dosya **operasyonel durum**dur (misyonu yeniden tartışmaz).
 >
-> **Branch:** `claude/apex-development-cdhj5c` (PR #4 merge sonrası `main`'den yeniden başlatıldı) · **Son güncelleme:** 2026-07-09 (dalga-4)
+> **Branch:** `claude/apex-development-cdhj5c` (PR #4 merge sonrası `main`'den yeniden başlatıldı) · **Son güncelleme:** 2026-07-09 (dalga-5)
+
+---
+
+**OTURUM 2026-07-09 (DEVAM — DALGA 5) — GATE v9 19/19, PUSH `44c8b97`:** **SOMUT:** iki yeni stub-şablon ailesi (`sol-sabit k*a` yapısal k-madenciliği; `seçim-ternary <=/>=/==` — `==`-seçici daha önce inilemeyen sınıf). Hakem GERÇEK iniş-regresyonu kanıtladı (kısmi-sıralı tiplerde min/max≠ternary; set-tanıklı pick_min reddediliyordu) → select<=/>= min/max'a ERTELEME kuralı, 5 red-first pin, taban inişleri byte-aynı. **W5B-mini kısmi:** test_shield exists-önce-parse reorder'ı İNDİ (byte-aynı + gizli çökme yolu kapandı); plan_cover_gaps memo'su REDDEDİLDİ (asla-ezme değişmezinin tek bekçisi plan-anı exists(); originals boş → staleness kapısı yazmayı KORUYAMAZ; memo TOCTOU penceresini açıyor, default verify=False'ta emniyet yok) — hedef-dosya+import-kapanışı-farkındalı anahtar tasarımı kayıtlı takip. **W5C `ebb1fe3`:** README ön-kapı (ölü @v1 → dürüst @main+not; docs/rnd kanıtları + apex quickstart başa linklendi; objective_compiler bayat çapraz-referans çözüldü-notuna döndü). **İKİ SCOUT BAYAT-BACKLOG YAKALADI:** W5A mikro-parti maddelerinin 4/4'ü ve cover-gaps köprüsü ÇOKTAN İNMİŞ (e7a964d vd.) — PROGRESS'in ~1104-1122 backlog bölgesi bu kayıtla BUDANMIŞ SAYILIR (yeni scout'lar oraya bakmasın). **AÇIK/patron-kapılı:** tag v0.1.0+PyPI (README hazır bekliyor); LLM-şeridi MVP (vizyonun 1 No'lu boşluğu); iki-tier gate; baseline-red auto-commit; memo anahtar-tasarımı; bytes-canary asimetrisi.
 
 ---
 
