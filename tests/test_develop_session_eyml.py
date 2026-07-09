@@ -1368,3 +1368,112 @@ def test_self_inflicted_red_rollback_is_deterministic_byte_for_byte(
     # The restored trees are byte-identical too.
     for rel in ("pkg/early.py", "pkg/late.py", "pkg/__init__.py"):
         assert (a / rel).read_text() == (b / rel).read_text()
+
+
+# --------------------------------------------------------------------------- #
+# manifesto_aware threaded through the session (W3C-L7): forwarded to every   #
+# objective's compile_objective call, laws aggregated/deduped across          #
+# objectives, and disclosed on the report/render — mirroring                  #
+# CompileResult.manifesto_laws / render_compile_markdown's block.             #
+# --------------------------------------------------------------------------- #
+
+def test_manifesto_aware_forwarded_to_every_objective(tmp_path: Path, monkeypatch):
+    from app.engine import develop_session as ds
+    from app.engine.objective_compiler import CompileResult
+
+    seen: list[bool | None] = []
+
+    def fake_compile(root, *, objective, **kw):
+        seen.append(kw.get("manifesto_aware"))
+        return CompileResult(objective=objective, fitness_start=0.0,
+                             fitness_end=0.0)
+
+    monkeypatch.setattr(ds, "compile_objective", fake_compile)
+    ds.run_develop_session(str(tmp_path), apply=False, verify=False,
+                           manifesto_aware=True)
+    # Every objective in the fixed session sequence saw manifesto_aware=True.
+    assert len(seen) == len(ds.SESSION_OBJECTIVES)
+    assert seen and all(s is True for s in seen)
+
+
+def test_manifesto_laws_aggregate_dedup_across_objectives(
+        tmp_path: Path, monkeypatch):
+    from app.engine import develop_session as ds
+    from app.engine.objective_compiler import CompileResult
+
+    order = list(ds.SESSION_OBJECTIVES)
+
+    def fake_compile(root, *, objective, **kw):
+        if objective == order[0]:
+            return CompileResult(objective=objective, fitness_start=0.0,
+                                 fitness_end=0.0, manifesto_laws=["law A"])
+        if objective == order[1]:
+            return CompileResult(objective=objective, fitness_start=0.0,
+                                 fitness_end=0.0,
+                                 manifesto_laws=["law A", "law B"])
+        return CompileResult(objective=objective, fitness_start=0.0,
+                             fitness_end=0.0)
+
+    monkeypatch.setattr(ds, "compile_objective", fake_compile)
+    report = ds.run_develop_session(str(tmp_path), apply=False, verify=False,
+                                    manifesto_aware=True)
+    # Deduplicated, first-fired order preserved across objectives.
+    assert report.manifesto_laws == ["law A", "law B"]
+
+
+def test_manifesto_laws_in_to_dict_only_when_present():
+    report = SessionReport(applied=True, manifesto_laws=["x"])
+    assert report.to_dict()["manifesto_laws"] == ["x"]
+
+    empty_report = SessionReport(applied=True)
+    assert "manifesto_laws" not in empty_report.to_dict()
+
+
+def test_manifesto_laws_rendered_disclosure_block(tmp_path: Path, monkeypatch):
+    from app.engine import develop_session as ds
+    from app.engine.objective_compiler import CompileResult
+
+    order = list(ds.SESSION_OBJECTIVES)
+
+    def fake_compile(root, *, objective, **kw):
+        if objective == order[0]:
+            return CompileResult(objective=objective, fitness_start=0.0,
+                                 fitness_end=0.0, manifesto_laws=["law A"])
+        return CompileResult(objective=objective, fitness_start=0.0,
+                             fitness_end=0.0)
+
+    monkeypatch.setattr(ds, "compile_objective", fake_compile)
+    report = ds.run_develop_session(str(tmp_path), apply=False, verify=False,
+                                    manifesto_aware=True)
+    md = render_session_markdown(report)
+    assert "## Manifesto laws fired" in md
+    assert "- law A" in md
+
+
+def test_manifesto_aware_off_byte_identical(tmp_path: Path):
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    _foreign_project(a)
+    _foreign_project(b)
+
+    report_explicit = run_develop_session(str(a), apply=False,
+                                          manifesto_aware=False)
+    report_omitted = run_develop_session(str(b), apply=False)
+
+    assert report_explicit.to_dict() == report_omitted.to_dict()
+    assert render_session_markdown(report_explicit) == render_session_markdown(
+        report_omitted)
+    assert "manifesto_laws" not in report_explicit.to_dict()
+    assert "manifesto_laws" not in report_omitted.to_dict()
+    assert report_explicit.manifesto_laws == report_omitted.manifesto_laws == []
+
+
+def test_manifesto_no_laws_is_noop(tmp_path: Path):
+    # No .apex history at all -> no learned law can fire, so arming
+    # manifesto_aware on a real fixture is a genuine no-op.
+    _foreign_project(tmp_path)
+    report = run_develop_session(str(tmp_path), apply=False,
+                                 manifesto_aware=True)
+    assert report.manifesto_laws == []
+    md = render_session_markdown(report)
+    assert "Manifesto laws fired" not in md

@@ -222,6 +222,12 @@ class SessionReport:
     # pytest produces a byte-identical report.
     pytest_missing: bool = False
     pytest_interpreter: str = ""
+    # MANIFESTO-ENFORCED (opt-in, ``manifesto_aware``): every law that fired
+    # across this session's objectives, deduplicated in first-fired order
+    # (mirrors ``CompileResult.manifesto_laws`` — see ``compile_objective``'s
+    # docstring). Empty for every session that did not arm ``manifesto_aware``
+    # (the default), so ``to_dict()``/render stay byte-identical.
+    manifesto_laws: list[str] = field(default_factory=list)
 
     @property
     def total_moves(self) -> int:
@@ -296,6 +302,12 @@ class SessionReport:
             # delta scope was entirely red at baseline, so every genuinely
             # test-vouched (or partial-red) session's dict is byte-identical.
             data["baseline_red_moves"] = self.baseline_red_moves
+        if self.manifesto_laws:
+            # ADDITIVE: appears only when the manifesto-aware gate actually
+            # fired a law across this session's objectives (mirrors
+            # ``CompileResult.to_dict()``'s ``manifesto_laws`` key), so a
+            # session that never armed ``manifesto_aware`` is byte-identical.
+            data["manifesto_laws"] = list(self.manifesto_laws)
         if self.pytest_missing:
             # Surface the LOUD message in --json too, so a machine consumer gets
             # the same actionable diagnostic the markdown shows (never a silent,
@@ -343,6 +355,20 @@ def _tier_for(step: Any) -> str:
     if getattr(step, "delta_vacuous", False):
         return TIER_BASELINE_RED
     return TIER_VERIFIED if getattr(step, "coverage_verified", False) else TIER_WEAK
+
+
+def _accumulate_manifesto_laws(report: SessionReport, result: CompileResult) -> None:
+    """Fold one objective's fired laws onto the session's aggregate, deduplicated
+    in first-fired order — the SAME dedup shape ``CompileResult.manifesto_laws``
+    itself uses within a single campaign, now applied ACROSS objectives. A
+    campaign that never armed ``manifesto_aware`` (or fired no law) hands an
+    empty ``result.manifesto_laws``, so this is a no-op and the aggregate stays
+    empty (byte-identical report). Extracted out of ``run_develop_session``'s
+    loop body to keep that function's branching flat (a single delegated call,
+    not an inline ``for``/``if``)."""
+    for law in result.manifesto_laws:
+        if law not in report.manifesto_laws:
+            report.manifesto_laws.append(law)
 
 
 def _collect_objective(result: CompileResult) -> SessionObjective:
@@ -631,6 +657,7 @@ def run_develop_session(
     project_root: str | Path, *, max_steps: int = 25, verify: bool = True,
     apply: bool = False, scope_verify: bool = False,
     objectives: tuple[str, ...] = SESSION_OBJECTIVES,
+    manifesto_aware: bool = False,
 ) -> SessionReport:
     """Run the fixed concrete-value-first objective sequence in one motion.
 
@@ -640,6 +667,11 @@ def run_develop_session(
     sources. ``apply=False`` is a report-only dry run (no writes); ``apply=True``
     lands the moves. After an apply, the FULL suite is run once as the backstop
     and the report states whether the repo is green after.
+
+    ``manifesto_aware`` (DEFAULT False = byte-identical to today) forwards to
+    EVERY objective's ``compile_objective`` call unchanged; each objective's
+    fired laws are aggregated onto ``report.manifesto_laws``, deduplicated in
+    first-fired order across the whole session.
 
     Deterministic: fixed order, deterministic sub-loops, clock/random-free report.
     """
@@ -709,8 +741,9 @@ def run_develop_session(
         result = compile_objective(
             str(root), objective=objective, max_steps=max_steps,
             verify=verify, apply=apply, scope_verify=effective_scope,
-            baseline_failing=baseline_failing)
+            baseline_failing=baseline_failing, manifesto_aware=manifesto_aware)
         report.objectives.append(_collect_objective(result))
+        _accumulate_manifesto_laws(report, result)
 
     if apply:
         _finalize_apply(report, root, before, verify=verify,
@@ -863,6 +896,19 @@ def _render_summary(report: SessionReport) -> list[str]:
             }.get(mv.tier, "⚠️ no-suite")
             lines.append(f"{i}. {mv.description} — {tag}")
     lines += _tier_footnote(report)
+    lines += _manifesto_laws_lines(report)
+    return lines
+
+
+def _manifesto_laws_lines(report: SessionReport) -> list[str]:
+    """Mirrors ``render_compile_markdown``'s 'Manifesto laws fired' block: which
+    laws governed this session, so `apex manifesto`'s constitution is visibly
+    governing here too. Present only when a law fired, so a session that never
+    armed ``manifesto_aware`` (or hit no matured laws) renders byte-identically."""
+    if not report.manifesto_laws:
+        return []
+    lines = ["", "## Manifesto laws fired"]
+    lines += [f"- {law}" for law in report.manifesto_laws]
     return lines
 
 

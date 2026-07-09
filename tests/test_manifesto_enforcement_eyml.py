@@ -310,11 +310,14 @@ def _dev_args(argv: list[str]) -> argparse.Namespace:
     return _parser().parse_args(["develop", *argv])
 
 
-def test_manifesto_warns_on_session(tmp_path, monkeypatch, capsys):
+def test_manifesto_no_warning_on_session(tmp_path, monkeypatch, capsys):
+    # `develop session` is now WIRED (forwards manifesto_aware to every
+    # objective's compile_objective call) — the deliberate removal this wave
+    # makes: the warning that used to fire here is gone.
     monkeypatch.setattr(cli_autonomy, "_develop_session", lambda *a, **k: 0)
     ns = _dev_args(["session", "--manifesto", "--target", str(tmp_path)])
     assert cli_autonomy.cmd_develop(ns) == 0
-    assert "not wired into `develop session`" in capsys.readouterr().err
+    assert capsys.readouterr().err == ""
 
 
 def test_manifesto_warns_on_chain(tmp_path, monkeypatch, capsys):
@@ -386,8 +389,65 @@ def test_manifesto_no_warning_on_auto(tmp_path, monkeypatch, capsys):
 
 def test_manifesto_no_warning_without_the_flag(tmp_path, monkeypatch, capsys):
     # Never warn when --manifesto wasn't passed at all — the helper is a pure
-    # no-op off, exactly like every other opt-in gate in this feature.
-    monkeypatch.setattr(cli_autonomy, "_develop_session", lambda *a, **k: 0)
-    ns = _dev_args(["session", "--target", str(tmp_path)])
+    # no-op off, exactly like every other opt-in gate in this feature. Uses
+    # --chain (still unsupported) so this keeps testing "flag genuinely off =>
+    # no warning even on a warn-eligible mode" (session no longer warns at
+    # all, flag on or off, so it would trivially pass here for the wrong
+    # reason).
+    monkeypatch.setattr(cli_autonomy, "_develop_chain", lambda *a, **k: 0)
+    ns = _dev_args(["--chain", "modernize", "--target", str(tmp_path)])
     assert cli_autonomy.cmd_develop(ns) == 0
     assert capsys.readouterr().err == ""
+
+
+def test_cli_session_forwards_manifesto_flag(tmp_path, monkeypatch):
+    # `_develop_session` must forward `--manifesto` through to
+    # `run_develop_session` as `manifesto_aware=True` — the wiring point the
+    # warning-removal above relies on being real.
+    from app.engine import develop_session as ds
+
+    captured: dict = {}
+
+    def fake_run_develop_session(*args, **kwargs):
+        captured.update(kwargs)
+        return ds.SessionReport(applied=False)
+
+    monkeypatch.setattr(ds, "run_develop_session", fake_run_develop_session)
+    ns = _dev_args(["session", "--manifesto", "--target", str(tmp_path)])
+    assert cli_autonomy.cmd_develop(ns) == 0
+    assert captured.get("manifesto_aware") is True
+
+
+def test_cli_session_manifesto_flag_off_by_default(tmp_path, monkeypatch):
+    from app.engine import develop_session as ds
+
+    captured: dict = {}
+
+    def fake_run_develop_session(*args, **kwargs):
+        captured.update(kwargs)
+        return ds.SessionReport(applied=False)
+
+    monkeypatch.setattr(ds, "run_develop_session", fake_run_develop_session)
+    ns = _dev_args(["session", "--target", str(tmp_path)])
+    assert cli_autonomy.cmd_develop(ns) == 0
+    assert captured.get("manifesto_aware") is False
+
+
+def _manifesto_action_help() -> str:
+    """The stored --manifesto action's help string on the `develop` subparser."""
+    top = _parser()
+    develop_parser = top._subparsers._group_actions[0].choices["develop"]
+    action = next(a for a in develop_parser._actions
+                  if a.dest == "manifesto_aware")
+    return action.help
+
+
+def test_help_text_no_longer_lists_session_as_unsupported():
+    # The --manifesto help text must say `develop session` IS enforced
+    # (alongside the default campaign and --auto), and must no longer list
+    # `session` among the warned-unsupported modes; --chain (still
+    # unsupported) stays named.
+    help_text = _manifesto_action_help()
+    assert "develop session" in help_text
+    assert "session/--chain" not in help_text
+    assert "--chain" in help_text

@@ -1404,7 +1404,8 @@ def _develop_session(args, target, max_steps, verify, apply) -> int:
 
     report = run_develop_session(
         str(target), max_steps=max_steps, verify=verify, apply=apply,
-        scope_verify=getattr(args, "fast", False))
+        scope_verify=getattr(args, "fast", False),
+        manifesto_aware=getattr(args, "manifesto_aware", False))
     _develop_session_write_proof(args, report, target)
     if args.json:
         print(json.dumps(report.to_dict(), indent=2))
@@ -1767,16 +1768,17 @@ def _warn_manifesto_unsupported(args: argparse.Namespace, mode: str) -> None:
     """``--manifesto`` HARD-ENFORCEs learned laws only through
     ``compile_objective``'s manifesto gate (:func:`_arm_manifesto_skip` /
     :func:`_manifesto_fragile_fired` in ``objective_compiler.py``) — reached
-    TODAY by just the default single-objective campaign and ``--auto``. Every
-    other ``develop`` mode (``session``, ``--chain``, ``--goals --fixpoint``,
-    ``--goal[ --atomic]``, ``--all``, ``--multifile``, ``--from-dream``) routes
-    through a DIFFERENT engine (``run_develop_session``, ``run_chain``,
-    ``run_goal_fixpoint``, ``compile_goal``/``orchestrate_goal``, ``compile_all``,
-    ``run_moves``, ``compile_from_dream``) that does not (yet) accept
-    ``manifesto_aware``, so the flag would otherwise be silently dropped — a
-    governance flag the user trusted, ignored with no sign of it. Warn honestly
-    on stderr, naming the mode that ignored it, instead of pretending to
-    enforce. A no-op when ``--manifesto`` was not passed."""
+    TODAY by the default single-objective campaign, ``--auto``, and
+    ``develop session`` (``run_develop_session`` now forwards ``manifesto_aware``
+    to every objective's ``compile_objective`` call). Every other ``develop``
+    mode (``--chain``, ``--goals --fixpoint``, ``--goal[ --atomic]``, ``--all``,
+    ``--multifile``, ``--from-dream``) routes through a DIFFERENT engine
+    (``run_chain``, ``run_goal_fixpoint``, ``compile_goal``/``orchestrate_goal``,
+    ``compile_all``, ``run_moves``, ``compile_from_dream``) that does not (yet)
+    accept ``manifesto_aware``, so the flag would otherwise be silently
+    dropped — a governance flag the user trusted, ignored with no sign of it.
+    Warn honestly on stderr, naming the mode that ignored it, instead of
+    pretending to enforce. A no-op when ``--manifesto`` was not passed."""
     if getattr(args, "manifesto_aware", False):
         print(f"⚠️  --manifesto is not wired into `develop {mode}` — it "
               "HARD-ENFORCES manifesto laws only for the default single-"
@@ -1812,7 +1814,6 @@ def cmd_develop(args: argparse.Namespace) -> int:
     # default so the bare-`session` word isn't mistaken for an objective name.
     if (getattr(args, "session", False)
             or getattr(args, "mode_word", "") == "session"):
-        _warn_manifesto_unsupported(args, "session")
         return _develop_session(args, target, max_steps, verify, apply)
 
     # `apex develop --chain a,b,c`: an EXPLICIT ordered objective SEQUENCE via the
@@ -2556,11 +2557,12 @@ def register_parsers(subparsers) -> None:
     develop_parser.add_argument(
         "--manifesto", action="store_true", dest="manifesto_aware",
         help="HARD-ENFORCE `apex manifesto`'s learned laws in the default "
-             "single-objective campaign and --auto ONLY: skip a move an AVOID "
-             "law flags (naming the law), demote a move a FRAGILE law flags "
-             "(never dropped); no-op (silent) with no manifesto laws, no-op "
-             "WITH A WARNING when combined with session/--chain/--goal/--all/"
-             "--multifile/--from-dream/--goals --fixpoint (not yet wired there)")
+             "single-objective campaign, --auto, and `develop session` ONLY: "
+             "skip a move an AVOID law flags (naming the law), demote a move a "
+             "FRAGILE law flags (never dropped); no-op (silent) with no "
+             "manifesto laws, no-op WITH A WARNING when combined with "
+             "--chain/--goal/--all/--multifile/--from-dream/--goals --fixpoint "
+             "(not yet wired there)")
     develop_parser.add_argument(
         "--session", action="store_true",
         help="Run the combined concrete-objective session (same as the `session` "
