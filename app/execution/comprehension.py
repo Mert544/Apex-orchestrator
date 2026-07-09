@@ -52,6 +52,7 @@ from app.execution._transform_base import (
 )
 from app.execution._transform_base import (
     finalize_module_rewrite as _finalize_module_rewrite,
+    parse_module_source as _parse_module_source,
 )
 from app.execution._plan_source import read_and_parse as _read_and_parse
 from app.execution.cross_file_rename import RenamePlan
@@ -187,18 +188,36 @@ def _apply(source: str, rewrites: list[_Rewrite]) -> str:
 
 
 def plan_simplify_comprehension(project_root: str | Path,
-                                module_rel: str) -> RenamePlan:
+                                module_rel: str,
+                                source: str | None = None) -> RenamePlan:
     """Build the single-module comprehension simplification plan, or its blockers.
 
     ``module_rel`` is a project-relative path (as produced by ``_py_files``).
     The plan rewrites every exact ``out = []`` + ``for ...: out.append(expr)``
     shape in the file into ``out = [expr for ... in ...]``; an empty plan means
-    nothing matched (a no-op, not a failure)."""
+    nothing matched (a no-op, not a failure).
+
+    ``source`` lets a caller that already has the module's text in hand (Apex's
+    mtime-fingerprinted source index) pass it straight in, skipping the
+    project-wide disk read this otherwise does on every call. Left ``None`` the
+    text is read from disk exactly as before, so every existing caller is
+    unchanged. For a strict-UTF-8-clean file (the overwhelming norm) a supplied
+    ``source`` is the same text this function's own read would have produced, so
+    the resulting plan is identical; a file with invalid UTF-8 bytes arrives as
+    the index's LENIENT (``errors="ignore"``) decode where the ``None`` path
+    would have failed its strict read — any plan built from that text is then
+    refused at apply time by the staleness gate's strict comparison
+    (fail-closed), never silently applied."""
     plan = RenamePlan(old=module_rel, new="simplify-comprehension")
-    parsed = _read_and_parse(plan, project_root, module_rel)
-    if parsed is None:
-        return plan
-    source, tree = parsed
+    if source is None:
+        parsed = _read_and_parse(plan, project_root, module_rel)
+        if parsed is None:
+            return plan
+        source, tree = parsed
+    else:
+        tree = _parse_module_source(plan, module_rel, source)
+        if tree is None:
+            return plan
 
     rewrites = _collect_rewrites(tree, source)
     if not rewrites:

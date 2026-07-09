@@ -332,28 +332,24 @@ def _dead_param_moves(project_root: str | Path) -> list[Move]:
     public ⇒ refuse) so both paths behave identically; only a provably-non-public
     function (underscore-prefixed, or absent from a declared ``__all__``) gets a
     drop move, where every caller is necessarily in-project and the suite gate +
-    auto-rollback is the proof."""
+    auto-rollback is the proof.
+
+    The module source for the public-API check is looked up in
+    ``_own_modules()`` — the parse-once source index every other objective
+    already shares — instead of a private ``read_text`` cache: a dead-param
+    finding is always inside a NON-fixture, library file (the same population
+    ``_own_modules()`` indexes; see ``_scan_dead_params``'s own fixture-path
+    gate), so the lookup is a plain dict fetch, not a fresh disk read."""
     from app.execution.freeze_dataclass import is_public_name
     from app.execution.param_drop import plan_param_drop
 
-    root = Path(project_root)
-    source_cache: dict[str, str | None] = {}
-
-    def _module_source(rel: str) -> str | None:
-        # Read each module's source ONCE (a module may carry several dead params),
-        # so the public-API gate is consistent with the bytes the drop rewrites.
-        if rel not in source_cache:
-            try:
-                source_cache[rel] = (root / rel).read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError):
-                source_cache[rel] = None
-        return source_cache[rel]
+    sources = dict(_own_modules(project_root))
 
     moves: list[Move] = []
     for dp in _dead_params(project_root):
         fn, param, mod = dp["function"], dp["param"], dp["module"]
-        source = _module_source(mod)
-        # An unreadable module (source is None) cannot be proven non-public, so —
+        source = sources.get(mod)
+        # An unindexed module (source is None) cannot be proven non-public, so —
         # like every other refuse-on-ambiguity rail — it is left alone (no move).
         if source is None or is_public_name(fn, source):
             continue  # public surface (or unprovable) — an external keyword caller hazard
@@ -369,10 +365,23 @@ def _dead_param_moves(project_root: str | Path) -> list[Move]:
 # --- Objective: inline single-use helpers (reduce indirection) ---------------
 
 def _inlinable_helpers(project_root: str | Path) -> list[dict]:
-    """Tiny single-use helpers `apex inline` would cleanly fold away."""
+    """Tiny single-use helpers `apex inline` would cleanly fold away.
+
+    Hands ``suggest_inlines`` the project's already-parsed trees (own modules
+    from the shared source index, tests/fixtures from a parse of their
+    already-read text — :func:`~app.engine.source_index.all_parsed_trees`)
+    instead of letting it fall back to its own uncached, unmemoized whole-project
+    ``_py_files`` + ``ast.parse`` walk. This was the ONE totally-uncached hot
+    path in the compiler: ``inline-helpers`` previously re-walked and re-parsed
+    every module from disk on every single scan (twice per pass — once for
+    fitness, once for moves — for as many passes as the objective needs), with
+    zero cache credit at all. The scanned population is unchanged (own + tests +
+    fixtures, the same universe the old fallback covered), so the suggestions are
+    byte-identical — only the parsing is reused."""
+    from app.engine.source_index import all_parsed_trees
     from app.execution.inline_function import suggest_inlines
 
-    return list(suggest_inlines(str(project_root)))
+    return list(suggest_inlines(str(project_root), trees=all_parsed_trees(project_root)))
 
 
 def inlinable_helper_fitness(project_root: str | Path) -> float:
@@ -505,15 +514,21 @@ def _tidy_transforms() -> list[tuple[str, str, Callable]]:
 
 
 def _content_plan(project_root: str | Path, rel: str, apply_fn: Callable,
-                  title: str) -> RenamePlan:
+                  title: str, source: str | None = None) -> RenamePlan:
     """Wrap a content-producing transform (a SemanticPatchResult) as a RenamePlan
     so the compiler can apply it through the same verified-with-rollback engine
-    as the structural moves."""
+    as the structural moves.
+
+    ``source`` lets a caller that already has the module's text in hand (the
+    ``_own_modules()`` scan ``_modernize_candidates`` already ran to decide this
+    move exists) pass it straight in, skipping the disk read this otherwise does
+    on every call. Left ``None`` the text is read from disk exactly as before."""
     plan = RenamePlan(old=rel, new=title)
-    try:
-        source = (Path(project_root) / rel).read_text(encoding="utf-8")
-    except OSError:
-        return plan
+    if source is None:
+        try:
+            source = (Path(project_root) / rel).read_text(encoding="utf-8")
+        except OSError:
+            return plan
     try:
         res = apply_fn(rel, source, title)
     except Exception:
@@ -546,10 +561,15 @@ def _content_parses(rel: str, new: str) -> bool:
     return True
 
 
-def _modernize_candidates(project_root: str | Path) -> list[tuple[str, str, str, Callable]]:
-    """(module, operator, label, apply_fn) for every tidy transform that would
-    actually change one of the project's own modules."""
-    out: list[tuple[str, str, str, Callable]] = []
+def _modernize_candidates(
+    project_root: str | Path,
+) -> list[tuple[str, str, str, Callable, str]]:
+    """(module, operator, label, apply_fn, source) for every tidy transform that
+    would actually change one of the project's own modules.
+
+    ``source`` is the SAME text ``_own_modules()`` already read to decide the
+    move exists — carried through so ``_modernize_moves`` never re-reads it."""
+    out: list[tuple[str, str, str, Callable, str]] = []
     transforms = _tidy_transforms()
     for rel, source in _own_modules(project_root):
         for op, label, fn in transforms:
@@ -560,7 +580,7 @@ def _modernize_candidates(project_root: str | Path) -> list[tuple[str, str, str,
             if res and getattr(res, "patch_requests", None):
                 new = res.patch_requests[0].get("new_content", "")
                 if new and new != source:
-                    out.append((rel, op, label, fn))
+                    out.append((rel, op, label, fn, source))
     return out
 
 
@@ -573,10 +593,11 @@ def modernize_fitness(project_root: str | Path) -> float:
 def _modernize_moves(project_root: str | Path) -> list[Move]:
     """One move per (module, tidy-transform) that would change something now."""
     moves: list[Move] = []
-    for rel, op, label, fn in _modernize_candidates(project_root):
+    for rel, op, label, fn, src in _modernize_candidates(project_root):
         moves.append(Move(
             operator=op, target=f"{rel}:{op}", description=f"{label} in {rel}",
-            build_plan=lambda r=rel, f=fn, t=label: _content_plan(project_root, r, f, t),
+            build_plan=lambda r=rel, f=fn, t=label, s=src: _content_plan(
+                project_root, r, f, t, source=s),
         ))
     return moves
 
@@ -648,12 +669,17 @@ def _dedup_moves(project_root: str | Path) -> list[Move]:
 # --- Objective: simplify boolean returns (if c: return True ... → return c) --
 
 def _bool_return_modules(project_root: str | Path) -> list[str]:
-    """Own modules whose boolean returns can be simplified."""
+    """Own modules whose boolean returns can be simplified.
+
+    Each module's plan is built from the source ``_own_modules()`` already
+    read, so the scan never re-reads the file from disk (``plan_simplify_bool_return``
+    otherwise reads it fresh on every call) — the same reuse
+    ``_magic_constant_modules`` already established for extract-constant."""
     from app.execution.bool_return import plan_simplify_bool_return
 
     out: list[str] = []
-    for rel, _src in _own_modules(project_root):
-        if plan_simplify_bool_return(project_root, rel).new_contents:
+    for rel, src in _own_modules(project_root):
+        if plan_simplify_bool_return(project_root, rel, source=src).new_contents:
             out.append(rel)
     return out
 
@@ -664,14 +690,25 @@ def bool_return_fitness(project_root: str | Path) -> float:
 
 
 def _bool_return_moves(project_root: str | Path) -> list[Move]:
-    """One move per module with a simplifiable boolean return."""
+    """One move per module with a simplifiable boolean return.
+
+    Scans ``_own_modules()`` directly (rather than delegating to
+    ``_bool_return_modules``) so each move's ``build_plan`` thunk can also carry
+    the already-read source — no OTHER move in this same pass ever targets the
+    same module, so the captured text can't go stale before ``build_plan`` runs;
+    a cross-pass edit is still caught by the apply-time stale-content check."""
     from app.execution.bool_return import plan_simplify_bool_return
 
-    return [Move(
-        operator="simplify_bool_return", target=f"{rel}:bool-return",
-        description=f"simplify boolean returns in {rel}",
-        build_plan=lambda r=rel: plan_simplify_bool_return(project_root, r),
-    ) for rel in _bool_return_modules(project_root)]
+    moves: list[Move] = []
+    for rel, src in _own_modules(project_root):
+        if plan_simplify_bool_return(project_root, rel, source=src).new_contents:
+            moves.append(Move(
+                operator="simplify_bool_return", target=f"{rel}:bool-return",
+                description=f"simplify boolean returns in {rel}",
+                build_plan=lambda r=rel, s=src: plan_simplify_bool_return(
+                    project_root, r, source=s),
+            ))
+    return moves
 
 
 # --- Objective: extract repeated magic literals into named constants ---------
@@ -711,12 +748,14 @@ def _extract_constant_moves(project_root: str | Path) -> list[Move]:
 # --- Objective: sort imports (group + alphabetize a clean import block) ------
 
 def _import_sort_modules(project_root: str | Path) -> list[str]:
-    """Own modules whose import block can be sorted."""
+    """Own modules whose import block can be sorted.
+
+    Reuses the source ``_own_modules()`` already read (see ``_bool_return_modules``)."""
     from app.execution.import_sort import plan_sort_imports
 
     out: list[str] = []
-    for rel, _src in _own_modules(project_root):
-        if plan_sort_imports(project_root, rel).new_contents:
+    for rel, src in _own_modules(project_root):
+        if plan_sort_imports(project_root, rel, source=src).new_contents:
             out.append(rel)
     return out
 
@@ -727,25 +766,36 @@ def import_sort_fitness(project_root: str | Path) -> float:
 
 
 def _import_sort_moves(project_root: str | Path) -> list[Move]:
-    """One move per module with a sortable import block."""
+    """One move per module with a sortable import block.
+
+    Scans ``_own_modules()`` directly so ``build_plan`` can also carry the
+    already-read source (see ``_bool_return_moves`` for the within-pass
+    staleness argument)."""
     from app.execution.import_sort import plan_sort_imports
 
-    return [Move(
-        operator="sort_imports", target=f"{rel}:sort-imports",
-        description=f"sort the import block in {rel}",
-        build_plan=lambda r=rel: plan_sort_imports(project_root, r),
-    ) for rel in _import_sort_modules(project_root)]
+    moves: list[Move] = []
+    for rel, src in _own_modules(project_root):
+        if plan_sort_imports(project_root, rel, source=src).new_contents:
+            moves.append(Move(
+                operator="sort_imports", target=f"{rel}:sort-imports",
+                description=f"sort the import block in {rel}",
+                build_plan=lambda r=rel, s=src: plan_sort_imports(
+                    project_root, r, source=s),
+            ))
+    return moves
 
 
 # --- Objective: simplify accumulator loops into comprehensions ---------------
 
 def _comprehension_modules(project_root: str | Path) -> list[str]:
-    """Own modules with an accumulator loop that can become a comprehension."""
+    """Own modules with an accumulator loop that can become a comprehension.
+
+    Reuses the source ``_own_modules()`` already read (see ``_bool_return_modules``)."""
     from app.execution.comprehension import plan_simplify_comprehension
 
     out: list[str] = []
-    for rel, _src in _own_modules(project_root):
-        if plan_simplify_comprehension(project_root, rel).new_contents:
+    for rel, src in _own_modules(project_root):
+        if plan_simplify_comprehension(project_root, rel, source=src).new_contents:
             out.append(rel)
     return out
 
@@ -756,25 +806,36 @@ def comprehension_fitness(project_root: str | Path) -> float:
 
 
 def _comprehension_moves(project_root: str | Path) -> list[Move]:
-    """One move per module with a simplifiable accumulator loop."""
+    """One move per module with a simplifiable accumulator loop.
+
+    Scans ``_own_modules()`` directly so ``build_plan`` can also carry the
+    already-read source (see ``_bool_return_moves`` for the within-pass
+    staleness argument)."""
     from app.execution.comprehension import plan_simplify_comprehension
 
-    return [Move(
-        operator="simplify_comprehension", target=f"{rel}:comprehension",
-        description=f"simplify accumulator loops in {rel}",
-        build_plan=lambda r=rel: plan_simplify_comprehension(project_root, r),
-    ) for rel in _comprehension_modules(project_root)]
+    moves: list[Move] = []
+    for rel, src in _own_modules(project_root):
+        if plan_simplify_comprehension(project_root, rel, source=src).new_contents:
+            moves.append(Move(
+                operator="simplify_comprehension", target=f"{rel}:comprehension",
+                description=f"simplify accumulator loops in {rel}",
+                build_plan=lambda r=rel, s=src: plan_simplify_comprehension(
+                    project_root, r, source=s),
+            ))
+    return moves
 
 
 # --- Objective: remove unused imports (drop dead top-level imports) ----------
 
 def _unused_import_modules(project_root: str | Path) -> list[str]:
-    """Own modules with a removable unused top-level import."""
+    """Own modules with a removable unused top-level import.
+
+    Reuses the source ``_own_modules()`` already read (see ``_bool_return_modules``)."""
     from app.execution.unused_imports import plan_remove_unused_imports
 
     out: list[str] = []
-    for rel, _src in _own_modules(project_root):
-        if plan_remove_unused_imports(project_root, rel).new_contents:
+    for rel, src in _own_modules(project_root):
+        if plan_remove_unused_imports(project_root, rel, source=src).new_contents:
             out.append(rel)
     return out
 
@@ -785,14 +846,23 @@ def unused_import_fitness(project_root: str | Path) -> float:
 
 
 def _unused_import_moves(project_root: str | Path) -> list[Move]:
-    """One move per module with a removable unused import."""
+    """One move per module with a removable unused import.
+
+    Scans ``_own_modules()`` directly so ``build_plan`` can also carry the
+    already-read source (see ``_bool_return_moves`` for the within-pass
+    staleness argument)."""
     from app.execution.unused_imports import plan_remove_unused_imports
 
-    return [Move(
-        operator="remove_unused_imports", target=f"{rel}:unused-import",
-        description=f"remove unused imports in {rel}",
-        build_plan=lambda r=rel: plan_remove_unused_imports(project_root, r),
-    ) for rel in _unused_import_modules(project_root)]
+    moves: list[Move] = []
+    for rel, src in _own_modules(project_root):
+        if plan_remove_unused_imports(project_root, rel, source=src).new_contents:
+            moves.append(Move(
+                operator="remove_unused_imports", target=f"{rel}:unused-import",
+                description=f"remove unused imports in {rel}",
+                build_plan=lambda r=rel, s=src: plan_remove_unused_imports(
+                    project_root, r, source=s),
+            ))
+    return moves
 
 
 _OBJECTIVES: dict[str, tuple[Callable[[str | Path], float],

@@ -180,6 +180,7 @@ def _is_non_library_file(module_rel: str) -> bool:
 def plan_source_rewrite(
     project_root: str | Path, module_rel: str, operator: str,
     transform: Callable[[str], str | None],
+    source: str | None = None,
 ) -> RenamePlan:
     """A :class:`RenamePlan` that applies a whole-module SOURCE ``transform``.
 
@@ -197,16 +198,29 @@ def plan_source_rewrite(
     WHOLE broad-land single-file family — add-final, freeze-dataclass,
     document-signature, … — from firing on files nobody imports as an API (the
     round-19 re-audit caught ``@final`` landing on a class in ``docs/conf.py``). A
-    skipped non-library file is an honest no-op, not a failure."""
+    skipped non-library file is an honest no-op, not a failure.
+
+    ``source`` lets a caller that already has the module's text in hand (Apex's
+    mtime-fingerprinted source index) pass it straight in, skipping the
+    project-wide disk read this otherwise does on every call. Left ``None`` the
+    text is read from disk exactly as before, so every existing caller is
+    unchanged. For a strict-UTF-8-clean file (the overwhelming norm) a supplied
+    ``source`` is the same text this function's own read would have produced, so
+    the resulting plan is identical; a file with invalid UTF-8 bytes arrives as
+    the index's LENIENT (``errors="ignore"``) decode where the ``None`` path
+    would have failed its strict read — any plan built from that text is then
+    refused at apply time by the staleness gate's strict comparison
+    (fail-closed), never silently applied."""
     plan = RenamePlan(old=module_rel, new=operator)
     if _is_fixture_path(module_rel):
         return plan  # never touch a test/fixture file
     if _is_non_library_file(module_rel):
         return plan  # packaging / config / task script — nobody imports it as an API
-    try:
-        source = (Path(project_root) / module_rel).read_text(encoding="utf-8")
-    except OSError:
-        return plan  # unreadable — no-op
+    if source is None:
+        try:
+            source = (Path(project_root) / module_rel).read_text(encoding="utf-8")
+        except OSError:
+            return plan  # unreadable — no-op
     new_source = transform(source)
     if new_source is None or new_source == source:
         return plan  # nothing provable to do — no-op
@@ -770,11 +784,23 @@ def _stale_plan_reason(root: Path, plan: RenamePlan) -> str | None:
     matches its snapshot. A plan with no ``originals`` entry for a target (or
     the target not yet existing — a plan that CREATES a file) is unaffected:
     the guard only fires when there is a snapshot to compare against.
-    Deterministic order (sorted) so the reported ``rel`` never varies."""
+    Deterministic order (sorted) so the reported ``rel`` never varies.
+
+    The live read is STRICT UTF-8 while a plan's snapshot may have come from a
+    LENIENT (``errors="ignore"``) read (the source index feeding ``source=``
+    into a planner). A live file that is not strict-UTF-8-decodable therefore
+    cannot be compared at all — the gate REFUSES with an honest reason rather
+    than crashing (or, worse, guessing): a gate must fail CLOSED on the very
+    edge it exists to guard."""
     for rel in sorted(plan.new_contents):
         if rel not in plan.originals or not (root / rel).exists():
             continue
-        if (root / rel).read_text(encoding="utf-8") != plan.originals[rel]:
+        try:
+            live = (root / rel).read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            return (f"stale plan: {rel} is not decodable as strict utf-8 — "
+                    "refusing to compare; replan before applying")
+        if live != plan.originals[rel]:
             return (f"stale plan: {rel} changed on disk since planning — "
                     "replan before applying")
     return None

@@ -139,6 +139,42 @@ def parse_cached(path: str | Path) -> ast.Module | None:
     return tree
 
 
+def parse_cached_text(path: str | Path, text: str) -> ast.Module | None:
+    """``ast.parse`` the GIVEN ``text`` as ``path``'s content, memoized in the
+    SAME ``(absolute path, st_mtime_ns)``-keyed store as :func:`parse_cached`.
+
+    For a caller that has ALREADY read ``path``'s text (e.g. the source index's
+    single ``_py_files`` walk) and only needs the parse: :func:`parse_cached`
+    would re-read the file from disk — a second read, and one that could (in a
+    mid-window edit) diverge from the text the caller holds. This entry point
+    parses the caller's text instead, preserving the read-once invariant
+    (``.source`` and ``.tree`` come from the SAME read) while still sharing the
+    one tree cache: a file already parsed via :func:`parse_cached` (or vice
+    versa, same mtime) is a hit either way.
+
+    THE CALLER VOUCHES that ``text`` is what a read of ``path`` at its CURRENT
+    mtime produces — i.e. the text was read in the same walk that observed the
+    file at this mtime. Under that contract, caching the parse of ``text``
+    under the ``(path, st_mtime_ns)`` key is equivalent to letting
+    :func:`parse_cached` read it itself. Unparseable text degrades to ``None``
+    (cached, like :func:`parse_cached`'s known-bad marker); when the file has
+    no stable stat key, falls back to an uncached parse of ``text``.
+    """
+    p = Path(path)
+    try:
+        stat = p.stat()
+    except (OSError, ValueError):
+        return _parse_text(text)
+
+    key = (str(p.resolve()), stat.st_mtime_ns)
+    if key in _TREE_CACHE:
+        return _TREE_CACHE[key]
+
+    tree = _parse_text(text)
+    _TREE_CACHE[key] = tree
+    return tree
+
+
 def _parse_tree(path: Path) -> ast.Module | None:
     """Uncached read + ``ast.parse`` of one file; ``None`` if it can't be read
     or doesn't parse. Mirrors the analyzers' original error handling exactly."""
@@ -146,6 +182,16 @@ def _parse_tree(path: Path) -> ast.Module | None:
         source = path.read_text(encoding="utf-8", errors="ignore")
         return ast.parse(source)
     except (SyntaxError, OSError, ValueError, RecursionError, MemoryError):
+        return None
+
+
+def _parse_text(text: str) -> ast.Module | None:
+    """Uncached ``ast.parse`` of already-read text; ``None`` if it doesn't
+    parse. The same degrade set as :func:`_parse_tree` minus the read errors a
+    text that is already in hand can no longer raise."""
+    try:
+        return ast.parse(text)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
         return None
 
 

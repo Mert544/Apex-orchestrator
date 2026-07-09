@@ -29,6 +29,21 @@ from app.execution.cross_file_rename import (
     _is_non_library_file,
     _py_files,
 )
+from app.tools.python_structure import parse_cached, parse_cached_text
+
+# The union of source_index's own former except-clause
+# (``SyntaxError, ValueError, RecursionError, MemoryError``) and
+# ``python_structure._parse_tree``'s (which additionally catches ``OSError`` —
+# a read failure mid-parse). Routing the per-file parses below through the
+# SHARED ``parse_cached``/``parse_cached_text`` cache (so a file already parsed
+# by ``dead-params``'s scan in the same session is not re-parsed here, and vice
+# versa) means this module's own degrade-to-``None`` guard must cover the WIDER
+# set too, or an exception class the cache itself already tolerates internally
+# could still surface here if that internal handling ever changes shape.
+# Reconciled once, named once, so the caches can never silently drift apart again.
+_PARSE_EXCEPTIONS: tuple[type[BaseException], ...] = (
+    SyntaxError, OSError, ValueError, RecursionError, MemoryError,
+)
 
 
 def _is_fixture_path(path: str) -> bool:
@@ -94,6 +109,20 @@ class SourceIndex:
         once and parsed once (``SyntaxError`` → ``tree=None``), and the result is
         stored in deterministic sorted ``rel`` order.
 
+        The parse itself is routed through
+        :func:`~app.tools.python_structure.parse_cached_text` — the process-level,
+        ``(absolute path, mtime)``-keyed AST cache the ``dead-params`` scan
+        (``_collect_dead_param_defs``, via ``parse_cached``) also reads from — so
+        a file already parsed by one subsystem in the same session is not parsed
+        again by the other, in either order. The ``_text`` entry point parses the
+        SOURCE THIS WALK ALREADY READ (never a second disk read), preserving the
+        invariant that each ``IndexedModule``'s ``tree`` is the parse of its own
+        ``source`` — one read, one parse, one cache. The wider
+        :data:`_PARSE_EXCEPTIONS` degrade guard below reconciles the two caches'
+        except-clause sets so a file that trips ``OSError`` (a class only
+        ``python_structure``'s own parser previously caught) still degrades to
+        ``tree=None`` here too, rather than raising.
+
         The SAME walk ALSO captures EVERY ``(rel, source)`` pair — tests and
         fixtures INCLUDED, recorded BEFORE the fixture / non-library ``continue`` —
         into ``all_sources``, so the tests-inclusive whole-project scan
@@ -114,8 +143,8 @@ class SourceIndex:
             if _is_fixture_path(rel) or _is_non_library_file(rel):
                 continue
             try:
-                tree: ast.Module | None = ast.parse(source)
-            except (SyntaxError, ValueError, RecursionError, MemoryError):
+                tree: ast.Module | None = parse_cached_text(root / rel, source)
+            except _PARSE_EXCEPTIONS:
                 tree = None
             modules.append(IndexedModule(rel=rel, source=source, tree=tree))
         modules.sort(key=lambda m: m.rel)
@@ -187,3 +216,55 @@ def indexed_project(project_root: str | Path, *, fresh: bool = False) -> SourceI
     index = SourceIndex.build(root)
     _INDEX_CACHE[key] = (fingerprint, index)
     return index
+
+
+def all_parsed_trees(project_root: str | Path) -> dict[str, ast.Module]:
+    """Every project module's parsed tree — own code PLUS tests/fixtures — built
+    with as little duplicate work as the two shared caches allow.
+
+    This is the drop-in replacement for a caller's own uncached ``_py_files`` +
+    ``ast.parse`` fallback (e.g. ``inline_function._suggest_trees(None)``): the
+    OWN modules' trees are taken straight from :func:`indexed_project` (already
+    read and parsed once by :meth:`SourceIndex.build`, itself routed through
+    :func:`~app.tools.python_structure.parse_cached` — zero extra I/O or parsing
+    here), and every RESIDUAL file — the tests/fixtures/non-library modules the
+    own-set gate excludes — is ALSO routed through the same per-file
+    ``(absolute path, mtime_ns)``-keyed ``parse_cached``. So the residual set is
+    read+parsed at most ONCE per process while its files are unchanged: the
+    second and every later call in the same pass/campaign (``suggest_inlines``
+    runs at least twice per ``inline-helpers`` pass — fitness + moves) is all
+    cache hits, exactly the discipline Stage-1 item 10 applied to the own set.
+
+    The residual POPULATION is unchanged: the same rel set the index's single
+    walk captured (``all_sources`` minus the own rels) — never narrowed. A
+    module that doesn't parse (own OR residual) is silently ABSENT from the
+    returned mapping — ``parse_cached`` degrades unreadable/unparseable files to
+    ``None``, which is skipped here, identical to the old fallback's
+    ``except ...: continue``; so a caller iterating the result never has to
+    special-case a ``None`` tree.
+
+    MID-CAMPAIGN-EDIT WINDOW (deliberate, fail-safe): ``parse_cached`` reads the
+    file from DISK itself, so a residual file edited between the index's
+    fingerprint walk and this parse yields the NEWER disk bytes here (fresher
+    than the index's cached text, never staler), and a file DELETED in that
+    window degrades to ``None`` → excluded (the old cached-text parse would have
+    kept it). Both divergences point the safe way: a scan population is at worst
+    momentarily smaller/fresher, and any plan built against content that no
+    longer matches disk is refused downstream by ``apply_rename``'s
+    ``_stale_plan_reason`` gate — the standing last line of defense."""
+    index = indexed_project(project_root)
+    root = Path(project_root)
+    trees: dict[str, ast.Module] = {
+        m.rel: m.tree for m in index.modules if m.tree is not None
+    }
+    own_rels = {m.rel for m in index.modules}
+    for rel in sorted(index.all_sources):
+        if rel in own_rels:
+            continue
+        try:
+            tree = parse_cached(root / rel)
+        except _PARSE_EXCEPTIONS:
+            continue
+        if tree is not None:
+            trees[rel] = tree
+    return trees

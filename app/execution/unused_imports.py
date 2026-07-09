@@ -295,19 +295,33 @@ def strip_unused_imports(source: str) -> str | None:
 
 
 def plan_remove_unused_imports(project_root: str | Path,
-                               module_rel: str) -> RenamePlan:
+                               module_rel: str,
+                               source: str | None = None) -> RenamePlan:
     """Build the single-module unused-import removal plan, or its blockers.
 
     ``module_rel`` is a project-relative path (as produced by ``_py_files``).
     Top-level imports whose bound name is referenced nowhere else in the module
     are dropped; an empty plan means nothing was unused (a no-op, not a
-    failure)."""
+    failure).
+
+    ``source`` lets a caller that already has the module's text in hand (Apex's
+    mtime-fingerprinted source index) pass it straight in, skipping the
+    project-wide disk read this otherwise does on every call. Left ``None`` the
+    text is read from disk exactly as before, so every existing caller is
+    unchanged. For a strict-UTF-8-clean file (the overwhelming norm) a supplied
+    ``source`` is the same text this function's own read would have produced, so
+    the resulting plan is identical; a file with invalid UTF-8 bytes arrives as
+    the index's LENIENT (``errors="ignore"``) decode where the ``None`` path
+    would have failed its strict read — any plan built from that text is then
+    refused at apply time by the staleness gate's strict comparison
+    (fail-closed), never silently applied."""
     plan = RenamePlan(old=module_rel, new="remove-unused-imports")
     if _is_package_init(module_rel):
         return plan  # public re-export surface — never prune a package __init__.py
-    source = _read_module_source(plan, project_root, module_rel)
     if source is None:
-        return plan
+        source = _read_module_source(plan, project_root, module_rel)
+        if source is None:
+            return plan
 
     tree = _parse_module_source(plan, module_rel, source)
     if tree is None:

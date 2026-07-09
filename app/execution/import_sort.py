@@ -175,20 +175,34 @@ def _splice(source: str, lo: int, hi: int, new_block: str) -> str:
     return "".join(lines)
 
 
-def plan_sort_imports(project_root: str | Path, module_rel: str) -> RenamePlan:
+def plan_sort_imports(project_root: str | Path, module_rel: str,
+                      source: str | None = None) -> RenamePlan:
     """Build the single-module import-sort plan, or its blockers.
 
     ``module_rel`` is a project-relative path (as produced by ``_py_files``).
     An empty plan means there was no clean, unsorted import run to reorder (a
-    no-op, not a failure)."""
+    no-op, not a failure).
+
+    ``source`` lets a caller that already has the module's text in hand (Apex's
+    mtime-fingerprinted source index) pass it straight in, skipping the
+    project-wide disk read this otherwise does on every call. Left ``None`` the
+    text is read from disk exactly as before, so every existing caller is
+    unchanged. For a strict-UTF-8-clean file (the overwhelming norm) a supplied
+    ``source`` is the same text this function's own read would have produced, so
+    the resulting plan is identical; a file with invalid UTF-8 bytes arrives as
+    the index's LENIENT (``errors="ignore"``) decode where the ``None`` path
+    would have failed its strict read — any plan built from that text is then
+    refused at apply time by the staleness gate's strict comparison
+    (fail-closed), never silently applied."""
     plan = RenamePlan(old=module_rel, new="sort-imports")
-    root = Path(project_root)
-    path = root / module_rel
-    try:
-        source = path.read_text(encoding="utf-8")
-    except OSError:
-        plan.blockers.append(f"cannot read {module_rel}")
-        return plan
+    if source is None:
+        root = Path(project_root)
+        path = root / module_rel
+        try:
+            source = path.read_text(encoding="utf-8")
+        except OSError:
+            plan.blockers.append(f"cannot read {module_rel}")
+            return plan
 
     try:
         tree = ast.parse(source)
