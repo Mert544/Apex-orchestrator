@@ -438,3 +438,111 @@ def test_session_proof_hash_deterministic_same_tree(tmp_path):
     assert proof_hash(a) == proof_hash(b)
     # value_landed over the same proof is also byte-identical.
     assert value_landed(a) == value_landed(b)
+
+
+# --- 8. CONSUMER-CORRECT KEY (W4B): finding.action is the OPERATOR, not the ---
+#        session objective — the pre-existing half of the W3A-L4 finding.
+#
+# Wave 3 fixed ``objective_compiler._record_backstop_ledger_correction``'s
+# action key (``finding.action = operator``, ``finding.label = objective``) but
+# explicitly named THIS writer's mismatch as an out-of-fence follow-up (see
+# that function's docstring). Before this fix, ``_session_proof_records``
+# stamped ``finding.action`` with the session OBJECTIVE name (e.g.
+# ``"dead-params"``), but the runtime avoid-guard
+# (``objective_compiler._avoid_flagged_targets``) queries
+# ``should_avoid(signatures, mv.operator, ...)`` by OPERATOR (e.g.
+# ``"drop_param"``) — so a landed session move could never season the
+# avoid-guard for its own operator.
+
+def test_session_proof_records_action_is_operator_not_objective():
+    # RED-FIRST, direct record-contract check: mirrors the maintain-path
+    # convention (``idea_action_bridge``'s ``action_type`` is operator-derived)
+    # and the wave-3 writer's ``finding.action``/``finding.label`` split.
+    from app.engine.develop_session import (
+        TIER_VERIFIED,
+        SessionMove,
+        SessionObjective,
+        _session_proof_records,
+    )
+
+    objective, operator = "dead-params", "drop_param"
+    report = SessionReport(applied=True)
+    obj = SessionObjective(objective=objective, moves=[
+        SessionMove(objective, operator, "app/m.py:f", "drop unused param",
+                   TIER_VERIFIED),
+    ])
+    report.objectives = [obj]
+
+    records = _session_proof_records(report)
+    assert len(records) == 1
+    finding = records[0]["finding"]
+    assert finding["action"] == operator     # CONSUMER-CORRECT key
+    assert finding["label"] == objective     # human attribution preserved
+    assert finding["operator"] == operator
+    assert finding["target"] == "app/m.py:f"
+
+
+def test_session_applied_record_feeds_should_avoid_by_operator(tmp_path):
+    # RED-FIRST: the reviewer's exact repro (mirrors
+    # test_standalone_backstop_correction_feeds_should_avoid in
+    # test_campaign_regression_backstop_eyml.py, and the dream-chain twin
+    # test_dream_land_applied_record_feeds_should_avoid_by_operator), adapted
+    # for a genuine "applied" session landing record.
+    #
+    # Seed TWO prior rolled_back attempts under the operator key — below
+    # ``_MIN_ATTEMPTS`` (3), so ``should_avoid`` is honestly False on that
+    # evidence alone. Then land ONE session move on the SAME (operator, trait)
+    # signature via the real writer: if ``finding.action`` is correctly keyed
+    # by OPERATOR, this is the THIRD attempt against the shared signature (2
+    # failures / 3 attempts = 66.7% >= the 60% avoid threshold) and
+    # ``should_avoid`` flips True — proving the record reaches the exact
+    # signature space ``_avoid_flagged_targets`` queries. Pre-fix
+    # (``finding.action = objective``) the landing would silently form its own
+    # orphan bucket under "dead-params" that no operator-keyed query ever
+    # reaches, leaving the operator stuck at 2 attempts (still False).
+    from app.engine.counterfactual_learning import (
+        failure_signatures,
+        module_traits,
+        should_avoid,
+    )
+    from app.engine.develop_session import (
+        TIER_VERIFIED,
+        SessionMove,
+        SessionObjective,
+    )
+    from app.engine.proof_history import load_proof_history
+    from app.engine.proof_of_fix import write_proof
+
+    objective, operator = "dead-params", "drop_param"
+    (tmp_path / ".apex").mkdir(parents=True)
+    (tmp_path / ".apex" / "proof-of-fix.json").write_text(json.dumps({
+        "schema": SCHEMA, "generated_at": "2026-01-01",
+        "fixes": [
+            {"outcome": "rolled_back",
+             "finding": {"action": operator, "label": "prior",
+                        "target": "app/m1.py:f"},
+             "changed_files": ["app/m1.py:f"]},
+            {"outcome": "rolled_back",
+             "finding": {"action": operator, "label": "prior",
+                        "target": "app/m2.py:f"},
+             "changed_files": ["app/m2.py:f"]},
+        ],
+    }), encoding="utf-8")
+    traits = module_traits("app/m1.py:f")
+    assert traits == module_traits("app/m2.py:f") == module_traits("app/m3.py:f")
+    pre = failure_signatures(load_proof_history(tmp_path))
+    assert should_avoid(pre, operator, traits) is False  # only 2 attempts yet
+
+    report = SessionReport(applied=True)
+    obj = SessionObjective(objective=objective, moves=[
+        SessionMove(objective, operator, "app/m3.py:f", "drop unused param",
+                   TIER_VERIFIED),
+    ])
+    report.objectives = [obj]
+    write_proof(build_session_proof(report, str(tmp_path)), str(tmp_path))
+
+    signatures = failure_signatures(load_proof_history(tmp_path))
+    # THE reviewer's exact repro: the runtime avoid-guard queries by OPERATOR.
+    assert should_avoid(signatures, operator, traits) is True
+    # ...and NEVER by the objective name — the exact mismatch this fix corrects.
+    assert should_avoid(signatures, objective, traits) is False

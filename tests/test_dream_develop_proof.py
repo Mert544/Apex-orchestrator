@@ -307,3 +307,121 @@ def test_build_dream_proof_empty_report_is_clean():
     assert value_landed(proof)["verdict"] == "no value landed"
     assert proof_manifest(proof)["verdict"] == "no fixes recorded"
     assert proof_hash(proof)  # a stable hash over the empty record set
+
+
+# --- 9. CONSUMER-CORRECT KEY (W4B): finding.action is the OPERATOR, not the ---
+#        chain objective — the pre-existing half of the W3A-L4 finding.
+#
+# Wave 3 fixed ``objective_compiler._record_backstop_ledger_correction``'s
+# action key (``finding.action = operator``, ``finding.label = objective``) but
+# explicitly named THIS writer's mismatch as an out-of-fence follow-up (see
+# that function's docstring). Before this fix, ``_dream_proof_records`` stamped
+# ``finding.action`` with the chain OBJECTIVE name (e.g. ``"dead-params"``),
+# but the runtime avoid-guard (``objective_compiler._avoid_flagged_targets``)
+# queries ``should_avoid(signatures, mv.operator, ...)`` by OPERATOR (e.g.
+# ``"drop_param"``) — so a landed dream-chain move could never season the
+# avoid-guard for its own operator, and ``proof_history.by_action`` /
+# ``learned_reliability_decayed`` (the manifesto's TRUST law) would attribute
+# the landing to a key ("dead-params") no other producer ever writes fixes
+# under, so it could never accrue enough history to matter either.
+
+def test_dream_proof_records_action_is_operator_not_objective():
+    # RED-FIRST, direct record-contract check: mirrors the maintain-path
+    # convention (``idea_action_bridge``'s ``action_type`` is operator-derived)
+    # and the wave-3 writer's ``finding.action``/``finding.label`` split.
+    from app.engine.dream_develop import (
+        CompileResult,
+        DreamChainReport,
+        _dream_proof_records,
+    )
+    from app.engine.objective_compiler import CompileStep
+
+    objective, operator = "dead-params", "drop_param"
+    result = CompileResult(objective=objective, fitness_start=1.0,
+                           fitness_end=0.5, applied=True)
+    result.steps = [
+        CompileStep(operator=operator, target="app/m.py:f",
+                   description="drop unused param", fitness_before=1.0,
+                   fitness_after=0.5, verified=True, coverage="module"),
+    ]
+    report = DreamChainReport(goal="ship-value", objectives=[objective],
+                              applied=True)
+    report.results = [result]
+
+    records = _dream_proof_records(report)
+    assert len(records) == 1
+    finding = records[0]["finding"]
+    assert finding["action"] == operator     # CONSUMER-CORRECT key
+    assert finding["label"] == objective     # human attribution preserved
+    assert finding["operator"] == operator
+    assert finding["target"] == "app/m.py:f"
+
+
+def test_dream_land_applied_record_feeds_should_avoid_by_operator(tmp_path):
+    # RED-FIRST: the reviewer's exact repro (mirrors
+    # test_standalone_backstop_correction_feeds_should_avoid in
+    # test_campaign_regression_backstop_eyml.py), adapted for a genuine
+    # "applied" landing record instead of a backstop correction.
+    #
+    # Seed TWO prior rolled_back attempts under the operator key — below
+    # ``_MIN_ATTEMPTS`` (3), so ``should_avoid`` is honestly False on that
+    # evidence alone. Then land ONE dream-chain move on the SAME (operator,
+    # trait) signature via the real writer: if ``finding.action`` is
+    # correctly keyed by OPERATOR, this is the THIRD attempt against the
+    # shared signature (2 failures / 3 attempts = 66.7% >= the 60% avoid
+    # threshold) and ``should_avoid`` flips True — proving the record reaches
+    # the exact signature space ``_avoid_flagged_targets`` queries. Pre-fix
+    # (``finding.action = objective``) the landing would silently form its
+    # own orphan bucket under "dead-params" that no operator-keyed query ever
+    # reaches, leaving the operator stuck at 2 attempts (still False).
+    from app.engine.counterfactual_learning import (
+        failure_signatures,
+        module_traits,
+        should_avoid,
+    )
+    from app.engine.dream_develop import (
+        CompileResult,
+        DreamChainReport,
+        build_dream_proof,
+    )
+    from app.engine.objective_compiler import CompileStep
+    from app.engine.proof_history import load_proof_history
+
+    objective, operator = "dead-params", "drop_param"
+    (tmp_path / ".apex").mkdir(parents=True)
+    (tmp_path / ".apex" / "proof-of-fix.json").write_text(json.dumps({
+        "schema": SCHEMA, "generated_at": "2026-01-01",
+        "fixes": [
+            {"outcome": "rolled_back",
+             "finding": {"action": operator, "label": "prior",
+                        "target": "app/m1.py:f"},
+             "changed_files": ["app/m1.py:f"]},
+            {"outcome": "rolled_back",
+             "finding": {"action": operator, "label": "prior",
+                        "target": "app/m2.py:f"},
+             "changed_files": ["app/m2.py:f"]},
+        ],
+    }), encoding="utf-8")
+    traits = module_traits("app/m1.py:f")
+    assert traits == module_traits("app/m2.py:f") == module_traits("app/m3.py:f")
+    pre = failure_signatures(load_proof_history(tmp_path))
+    assert should_avoid(pre, operator, traits) is False  # only 2 attempts yet
+
+    result = CompileResult(objective=objective, fitness_start=1.0,
+                           fitness_end=0.5, applied=True)
+    result.steps = [
+        CompileStep(operator=operator, target="app/m3.py:f",
+                   description="drop unused param", fitness_before=1.0,
+                   fitness_after=0.5, verified=True, coverage="module"),
+    ]
+    report = DreamChainReport(goal="ship-value", objectives=[objective],
+                              applied=True)
+    report.results = [result]
+    from app.engine.proof_of_fix import write_proof
+    write_proof(build_dream_proof(report, str(tmp_path)), str(tmp_path))
+
+    signatures = failure_signatures(load_proof_history(tmp_path))
+    # THE reviewer's exact repro: the runtime avoid-guard queries by OPERATOR.
+    assert should_avoid(signatures, operator, traits) is True
+    # ...and NEVER by the objective name — the exact mismatch this fix corrects.
+    assert should_avoid(signatures, objective, traits) is False

@@ -492,7 +492,21 @@ def _dream_proof_records(report: DreamChainReport) -> list[dict]:
     fake it), the ``verification.strength.level`` carried by the step's coverage
     (the SAME ``function``/``module``/``test-change``/``none`` vocabulary
     value-landed reads), and a not-rolled-back ``rollback`` clause. Pure: no clock,
-    no random, no I/O — a deterministic projection of the report."""
+    no random, no I/O — a deterministic projection of the report.
+
+    ``finding.action`` is stamped with the step's ``operator`` — NOT the chain
+    objective name — because that is the CONSUMER-CORRECT key:
+    ``counterfactual_learning._action_of``/``proof_history._action_of`` read
+    ``finding.action`` verbatim, and the runtime avoid-guard queries
+    ``should_avoid(signatures, mv.operator, module_traits(...))``
+    (``objective_compiler._avoid_flagged_targets``) — never by objective name.
+    This mirrors the maintain-path convention (``idea_action_bridge``'s
+    ``action_type`` is operator-derived, e.g. ``_OPERATOR_ACTIONS``) and the
+    wave-3 fix to ``objective_compiler._record_backstop_ledger_correction`` (see
+    that function's docstring, which named this exact gap in THIS module as an
+    out-of-fence follow-up). ``finding.label`` keeps the chain objective name for
+    HUMAN attribution — no ``should_avoid``/``by_action`` consumer reads
+    ``label``, so overloading it is safe."""
     records: list[dict] = []
     for r in report.results:
         for s in r.steps:
@@ -500,7 +514,7 @@ def _dream_proof_records(report: DreamChainReport) -> list[dict]:
                 "finding": {
                     "label": r.objective,
                     "branch": "",
-                    "action": r.objective,
+                    "action": s.operator,
                     "operator": s.operator,
                     "target": s.target,
                 },

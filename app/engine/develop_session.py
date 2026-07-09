@@ -1230,7 +1230,21 @@ def _session_proof_records(report: SessionReport) -> list[dict]:
     ``tier`` via :data:`_SESSION_TIER_LEVEL` (the SAME
     ``function``/``module``/``none``/``no-suite`` vocabulary value-landed reads),
     and a not-rolled-back ``rollback`` clause. Pure: no clock, no random, no I/O —
-    a deterministic projection of the report."""
+    a deterministic projection of the report.
+
+    ``finding.action`` is stamped with the move's ``operator`` — NOT the session
+    objective name — because that is the CONSUMER-CORRECT key:
+    ``counterfactual_learning._action_of``/``proof_history._action_of`` read
+    ``finding.action`` verbatim, and the runtime avoid-guard queries
+    ``should_avoid(signatures, mv.operator, module_traits(...))``
+    (``objective_compiler._avoid_flagged_targets``) — never by objective name.
+    This mirrors the maintain-path convention (``idea_action_bridge``'s
+    ``action_type`` is operator-derived) and the wave-3 fix to
+    ``objective_compiler._record_backstop_ledger_correction`` (see that
+    function's docstring, which named this exact gap in THIS module as an
+    out-of-fence follow-up). ``finding.label`` keeps the session objective name
+    for HUMAN attribution — no ``should_avoid``/``by_action`` consumer reads
+    ``label``, so overloading it is safe."""
     records: list[dict] = []
     for obj in report.objectives:
         for mv in obj.moves:
@@ -1238,7 +1252,7 @@ def _session_proof_records(report: SessionReport) -> list[dict]:
                 "finding": {
                     "label": obj.objective,
                     "branch": "",
-                    "action": obj.objective,
+                    "action": mv.operator,
                     "operator": mv.operator,
                     "target": mv.target,
                 },
